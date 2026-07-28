@@ -147,8 +147,8 @@ function fallbackOrderbook(
 
 const DEFAULT_FEES: FeeMatrix = {
   Binance: {
-    USDT: { Tron: 1, Ethereum: 4, Kaia: 0.15, Aptos: 0.2 },
-    USDC: { Ethereum: 4, Solana: 1 },
+    USDT: { Tron: 1.5, Ethereum: 0.4, Kaia: 0.02, Aptos: 0.1 },
+    USDC: { Ethereum: 0.6, Solana: 0.3 },
   },
   Bitget: {
     USDT: { Tron: 1, Ethereum: 4, Kaia: 0.1, Aptos: 0.1 },
@@ -1630,6 +1630,15 @@ export default function Home() {
                   ))}
                 </div>
               ))}
+            </div>
+
+            <div className="withdrawal-fee-unit">
+              <strong>출금 수수료 단위</strong>
+              <p>
+                각 입력값은 출금하는 스테이블코인 수량입니다. USDT 항목의 1은
+                1 USDT, USDC 항목의 1은 1 USDC이며, 원화 또는 TRX·ETH·SOL
+                같은 네트워크 가스 토큰 단위가 아닙니다.
+              </p>
             </div>
 
             <div className="fee-panel-footer">

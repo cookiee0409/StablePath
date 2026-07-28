@@ -1501,6 +1501,29 @@ footer > span {
   font-weight: 750;
 }
 
+.withdrawal-fee-unit {
+  margin: 0 34px;
+  padding: 14px 16px;
+  border: 1px solid #a9b9d7;
+  background: #edf3ff;
+}
+
+.withdrawal-fee-unit strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #263f70;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.withdrawal-fee-unit p {
+  margin: 0;
+  color: #405272;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.6;
+}
+
 .fee-panel-footer {
   padding: 18px 34px 24px;
   display: flex;
@@ -1875,6 +1898,11 @@ footer > span {
   .fee-panel-footer {
     padding-right: 18px;
     padding-left: 18px;
+  }
+
+  .withdrawal-fee-unit {
+    margin-right: 18px;
+    margin-left: 18px;
   }
 
   .fee-table-wrap,

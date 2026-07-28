@@ -86,6 +86,13 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(page, /Bithumb: 0\.0004/);
   assert.match(
     page,
+    /USDT: \{ Tron: 1\.5, Ethereum: 0\.4, Kaia: 0\.02, Aptos: 0\.1 \}/,
+  );
+  assert.match(page, /USDC: \{ Ethereum: 0\.6, Solana: 0\.3 \}/);
+  assert.match(page, /출금 수수료 단위/);
+  assert.match(page, /1 USDT, USDC 항목의 1은 1 USDC/);
+  assert.match(
+    page,
     /실제 값과 차이가 있을 수 있으므로, 거래 전 본인이 반드시/,
   );
   assert.match(page, /slippageBps/);
