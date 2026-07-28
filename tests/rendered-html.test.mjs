@@ -92,6 +92,9 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(page, /converted && foreign\?\.source !== "live"/);
   assert.match(page, /domesticQuote\.source !== "live"/);
   assert.match(page, /bitget\.USDT\.fees/);
+  assert.match(page, /recoverBrowserMarket/);
+  assert.match(page, /data-api\.binance\.vision/);
+  assert.match(page, /BROWSER_RECOVERY_FAILED/);
   assert.doesNotMatch(
     page,
     /\.\.\.current\.Bitget\.USDT,\s*\.\.\.\(bitget\.USDT/s,
