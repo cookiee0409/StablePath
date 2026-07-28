@@ -24,6 +24,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
+  font-size: 18px;
   font-family:
     "Pretendard Variable", Pretendard, "Noto Sans KR", Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
