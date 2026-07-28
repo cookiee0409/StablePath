@@ -260,6 +260,207 @@ function feeSourceLabel(source: FeeSource) {
   return "직접 입력 수수료";
 }
 
+function browserNumeric(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function parseBrowserForeignQuote(
+  bidValue: unknown,
+  askValue: unknown,
+  lastValue?: unknown,
+) {
+  const bid = browserNumeric(bidValue);
+  const ask = browserNumeric(askValue);
+  const last = browserNumeric(lastValue) || (bid + ask) / 2;
+  if (!bid || !ask || !last) throw new Error("No usable quote");
+  return { bid, ask, last };
+}
+
+async function fetchBrowserJson(url: string) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 6_000);
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP_${response.status}`);
+    return {
+      data: (await response.json()) as unknown,
+      latencyMs: Date.now() - startedAt,
+    };
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+const BROWSER_FOREIGN_LOADERS: Record<
+  Exchange,
+  {
+    url: string;
+    parse: (raw: unknown) => { bid: number; ask: number; last: number };
+  }
+> = {
+  Binance: {
+    url: "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=USDCUSDT",
+    parse: (raw) => {
+      const data = raw as Record<string, unknown>;
+      return parseBrowserForeignQuote(data.bidPrice, data.askPrice);
+    },
+  },
+  Bitget: {
+    url: "https://api.bitget.com/api/v3/market/tickers?category=SPOT&symbol=USDCUSDT",
+    parse: (raw) => {
+      const response = raw as { data?: Array<Record<string, unknown>> };
+      const data = response.data?.[0] ?? {};
+      return parseBrowserForeignQuote(
+        data.bid1Price,
+        data.ask1Price,
+        data.lastPrice,
+      );
+    },
+  },
+  Bybit: {
+    url: "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDCUSDT",
+    parse: (raw) => {
+      const response = raw as {
+        result?: { list?: Array<Record<string, unknown>> };
+      };
+      const data = response.result?.list?.[0] ?? {};
+      return parseBrowserForeignQuote(
+        data.bid1Price,
+        data.ask1Price,
+        data.lastPrice,
+      );
+    },
+  },
+  OKX: {
+    url: "https://www.okx.com/api/v5/market/ticker?instId=USDC-USDT",
+    parse: (raw) => {
+      const response = raw as { data?: Array<Record<string, unknown>> };
+      const data = response.data?.[0] ?? {};
+      return parseBrowserForeignQuote(data.bidPx, data.askPx, data.last);
+    },
+  },
+};
+
+function normalizeBrowserChain(value: unknown): Chain | null {
+  const chain = String(value ?? "").toUpperCase();
+  if (chain.includes("TRC") || chain.includes("TRON")) return "Tron";
+  if (chain.includes("ERC") || chain === "ETH" || chain.includes("ETHEREUM"))
+    return "Ethereum";
+  if (chain.includes("KAIA") || chain.includes("KLAY")) return "Kaia";
+  if (chain.includes("APT")) return "Aptos";
+  if (chain.includes("SOL") || chain.includes("SPL")) return "Solana";
+  return null;
+}
+
+async function recoverBrowserFee(
+  asset: Asset,
+  current?: FeeAssetPayload,
+): Promise<FeeAssetPayload> {
+  if (current?.source === "live") return current;
+  const url = `https://api.bitget.com/api/v2/spot/public/coins?coin=${asset}`;
+  try {
+    const response = await fetchBrowserJson(url);
+    const raw = response.data as {
+      data?: Array<{
+        chains?: Array<{
+          chain?: string;
+          chainType?: string;
+          withdrawFee?: string;
+          withdrawable?: string | boolean;
+        }>;
+      }>;
+    };
+    const fees: Partial<Record<Chain, number>> = {};
+    for (const item of raw.data?.[0]?.chains ?? []) {
+      const chain = normalizeBrowserChain(item.chainType ?? item.chain);
+      const fee = Number(item.withdrawFee);
+      if (
+        chain &&
+        CHAINS[asset].includes(chain) &&
+        Number.isFinite(fee) &&
+        fee >= 0 &&
+        String(item.withdrawable ?? "true").toLowerCase() !== "false"
+      ) {
+        fees[chain] = fee;
+      }
+    }
+    const supportedChains = Object.keys(fees) as Chain[];
+    if (supportedChains.length === 0) throw new Error("No compatible chains");
+    return {
+      fees,
+      supportedChains,
+      source: "live",
+      checkedAt: new Date().toISOString(),
+      endpoint: new URL(url).host,
+      latencyMs: response.latencyMs,
+    };
+  } catch {
+    return (
+      current ?? {
+        fees: {},
+        supportedChains: [],
+        source: "unavailable",
+        checkedAt: new Date().toISOString(),
+        reason: "BROWSER_RECOVERY_FAILED",
+      }
+    );
+  }
+}
+
+async function recoverBrowserMarket(
+  payload: MarketPayload,
+): Promise<MarketPayload> {
+  const foreign = await Promise.all(
+    payload.foreign.map(async (quote) => {
+      if (quote.source === "live") return quote;
+      const loader = BROWSER_FOREIGN_LOADERS[quote.exchange];
+      try {
+        const response = await fetchBrowserJson(loader.url);
+        return {
+          exchange: quote.exchange,
+          ...loader.parse(response.data),
+          source: "live" as const,
+          checkedAt: new Date().toISOString(),
+          endpoint: new URL(loader.url).host,
+          latencyMs: response.latencyMs,
+        };
+      } catch {
+        return quote;
+      }
+    }),
+  );
+  const [usdtFees, usdcFees] = await Promise.all([
+    recoverBrowserFee("USDT", payload.liveFees?.Bitget?.USDT),
+    recoverBrowserFee("USDC", payload.liveFees?.Bitget?.USDC),
+  ]);
+  const liveFees = {
+    ...payload.liveFees,
+    Bitget: { USDT: usdtFees, USDC: usdcFees },
+  };
+  const quotesLive =
+    foreign.every((quote) => quote.source === "live") &&
+    payload.domestic.every((quote) => quote.source === "live");
+  const feesLive = [usdtFees, usdcFees].every(
+    (result) => result.source === "live",
+  );
+  return {
+    ...payload,
+    foreign,
+    liveFees,
+    quality: {
+      quotes: quotesLive ? "live" : "partial",
+      fees: feesLive ? "live" : "partial",
+    },
+    hasFallback: !quotesLive || !feesLive,
+  };
+}
+
 function displayTime(iso: string) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime()) || date.getTime() === 0) return "연결 대기";
@@ -367,10 +568,11 @@ export default function Home() {
       const response = await fetch("/api/market", { cache: "no-store" });
       if (!response.ok) throw new Error("quote fetch failed");
       const payload = (await response.json()) as MarketPayload;
-      setMarket(payload);
+      const recovered = await recoverBrowserMarket(payload);
+      setMarket(recovered);
       if (!hasSavedFees.current) {
-        setFees(mergeFees(DEFAULT_FEES, payload.liveFees));
-        setFeeSources(resolveFeeSources(payload.liveFees));
+        setFees(mergeFees(DEFAULT_FEES, recovered.liveFees));
+        setFeeSources(resolveFeeSources(recovered.liveFees));
       }
     } catch {
       setMarket((current) => ({ ...current, hasFallback: true }));
