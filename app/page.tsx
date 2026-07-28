@@ -1,0 +1,1130 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+type Asset = "USDT" | "USDC";
+type Exchange = "Binance" | "Bitget" | "Bybit" | "OKX";
+type DomesticExchange = "Upbit" | "Bithumb";
+type Chain = "Tron" | "Ethereum" | "Kaia" | "Aptos" | "Solana";
+type QuoteSource = "live" | "fallback";
+type OrderLevel = {
+  price: number;
+  size: number;
+};
+
+type MarketPayload = {
+  foreign: Array<{
+    exchange: Exchange;
+    bid: number;
+    ask: number;
+    last: number;
+    source: QuoteSource;
+  }>;
+  domestic: Array<{
+    exchange: DomesticExchange;
+    asset: Asset;
+    bid: number;
+    ask: number;
+    bids: OrderLevel[];
+    asks: OrderLevel[];
+    source: QuoteSource;
+  }>;
+  liveFees?: {
+    Bitget?: Partial<Record<Asset, Partial<Record<Chain, number>>>>;
+  };
+  updatedAt: string;
+  hasFallback: boolean;
+};
+
+type FeeMatrix = Record<
+  Exchange,
+  Record<Asset, Partial<Record<Chain, number>>>
+>;
+
+type RouteResult = {
+  id: string;
+  exchange: Exchange;
+  startAsset: Asset;
+  transferAsset: Asset;
+  domestic: DomesticExchange;
+  chain: Chain;
+  withdrawalFee: number;
+  quantityAfterSwap: number;
+  netQuantity: number;
+  filledQuantity: number;
+  unfilledQuantity: number;
+  fillRatio: number;
+  fullyFillable: boolean;
+  grossKrw: number;
+  averageSellPrice: number;
+  topBid: number;
+  slippageBps: number;
+  levelsUsed: number;
+  visibleBidLiquidity: number;
+  krw: number;
+  source: QuoteSource;
+  converted: boolean;
+};
+
+const EXCHANGES: Exchange[] = ["Binance", "Bitget", "Bybit", "OKX"];
+const DOMESTIC_EXCHANGES: DomesticExchange[] = ["Upbit", "Bithumb"];
+const ASSETS: Asset[] = ["USDT", "USDC"];
+const CHAINS: Record<Asset, Chain[]> = {
+  USDT: ["Tron", "Ethereum", "Kaia", "Aptos"],
+  USDC: ["Ethereum", "Solana"],
+};
+
+const CHAIN_LABELS: Record<Chain, string> = {
+  Tron: "TRON",
+  Ethereum: "ETH",
+  Kaia: "KAIA",
+  Aptos: "APTOS",
+  Solana: "SOL",
+};
+
+const EXCHANGE_FEES: Record<Exchange, number> = {
+  Binance: 0.001,
+  Bitget: 0.001,
+  Bybit: 0.001,
+  OKX: 0.001,
+};
+
+const DOMESTIC_FEES: Record<DomesticExchange, number> = {
+  Upbit: 0.0005,
+  Bithumb: 0.0005,
+};
+
+function fallbackOrderbook(
+  bid: number,
+  ask: number,
+  fallbackAsset: Asset,
+) {
+  const multiplier = fallbackAsset === "USDT" ? 1 : 0.86;
+  const sizes = [2_500, 5_000, 9_000, 15_000, 24_000, 38_000, 60_000];
+  return {
+    bids: sizes.map((size, index) => ({
+      price: Math.max(1, bid - index),
+      size: size * multiplier,
+    })),
+    asks: sizes.map((size, index) => ({
+      price: ask + index,
+      size: size * multiplier * 0.92,
+    })),
+  };
+}
+
+const DEFAULT_FEES: FeeMatrix = {
+  Binance: {
+    USDT: { Tron: 1, Ethereum: 4, Kaia: 0.15, Aptos: 0.2 },
+    USDC: { Ethereum: 4, Solana: 1 },
+  },
+  Bitget: {
+    USDT: { Tron: 1, Ethereum: 4, Kaia: 0.1, Aptos: 0.1 },
+    USDC: { Ethereum: 4, Solana: 1 },
+  },
+  Bybit: {
+    USDT: { Tron: 1, Ethereum: 4, Kaia: 0.1, Aptos: 0.2 },
+    USDC: { Ethereum: 4, Solana: 1 },
+  },
+  OKX: {
+    USDT: { Tron: 1, Ethereum: 4, Kaia: 0.1, Aptos: 0.2 },
+    USDC: { Ethereum: 4, Solana: 1 },
+  },
+};
+
+const FALLBACK_MARKET: MarketPayload = {
+  foreign: EXCHANGES.map((exchange) => ({
+    exchange,
+    bid: 0.9997,
+    ask: 1.0003,
+    last: 1,
+    source: "fallback",
+  })),
+  domestic: DOMESTIC_EXCHANGES.flatMap((exchange, exchangeIndex) =>
+    ASSETS.map((asset, assetIndex) => {
+      const bid = 1385 - exchangeIndex - assetIndex;
+      const ask = 1386 - exchangeIndex;
+      return {
+        exchange,
+        asset,
+        bid,
+        ask,
+        ...fallbackOrderbook(bid, ask, asset),
+        source: "fallback" as const,
+      };
+    }),
+  ),
+  updatedAt: new Date(0).toISOString(),
+  hasFallback: true,
+};
+
+const krwFormatter = new Intl.NumberFormat("ko-KR", {
+  maximumFractionDigits: 0,
+});
+const coinFormatter = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4,
+});
+
+function mergeFees(
+  current: FeeMatrix,
+  liveFees: MarketPayload["liveFees"],
+): FeeMatrix {
+  const bitget = liveFees?.Bitget;
+  if (!bitget) return current;
+  return {
+    ...current,
+    Bitget: {
+      USDT: { ...current.Bitget.USDT, ...(bitget.USDT ?? {}) },
+      USDC: { ...current.Bitget.USDC, ...(bitget.USDC ?? {}) },
+    },
+  };
+}
+
+function displayTime(iso: string) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime()) || date.getTime() === 0) return "연결 대기";
+  return new Intl.DateTimeFormat("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function executeMarketSell(quantity: number, bids: OrderLevel[]) {
+  const sortedBids = [...bids]
+    .filter(
+      (level) =>
+        Number.isFinite(level.price) &&
+        level.price > 0 &&
+        Number.isFinite(level.size) &&
+        level.size > 0,
+    )
+    .sort((a, b) => b.price - a.price);
+  const visibleBidLiquidity = sortedBids.reduce(
+    (total, level) => total + level.size,
+    0,
+  );
+  const topBid = sortedBids[0]?.price ?? 0;
+  let remaining = quantity;
+  let filledQuantity = 0;
+  let grossKrw = 0;
+  let levelsUsed = 0;
+
+  for (const level of sortedBids) {
+    if (remaining <= 0.00000001) break;
+    const fillSize = Math.min(remaining, level.size);
+    if (fillSize <= 0) continue;
+    filledQuantity += fillSize;
+    grossKrw += fillSize * level.price;
+    remaining -= fillSize;
+    levelsUsed += 1;
+  }
+
+  const unfilledQuantity = Math.max(0, quantity - filledQuantity);
+  const fillRatio = quantity > 0 ? filledQuantity / quantity : 0;
+  const averageSellPrice =
+    filledQuantity > 0 ? grossKrw / filledQuantity : 0;
+  const slippageBps =
+    topBid > 0 && averageSellPrice > 0
+      ? Math.max(0, ((topBid - averageSellPrice) / topBid) * 10_000)
+      : 0;
+
+  return {
+    filledQuantity,
+    unfilledQuantity,
+    fillRatio,
+    fullyFillable: unfilledQuantity <= Math.max(0.000001, quantity * 0.000001),
+    grossKrw,
+    averageSellPrice,
+    topBid,
+    slippageBps,
+    levelsUsed,
+    visibleBidLiquidity,
+  };
+}
+
+export default function Home() {
+  const [asset, setAsset] = useState<Asset>("USDT");
+  const [amount, setAmount] = useState("10000");
+  const [selectedExchange, setSelectedExchange] = useState<Exchange | "all">(
+    "all",
+  );
+  const [market, setMarket] = useState<MarketPayload>(FALLBACK_MARKET);
+  const [fees, setFees] = useState<FeeMatrix>(DEFAULT_FEES);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [feePanelOpen, setFeePanelOpen] = useState(false);
+  const [expandedRows, setExpandedRows] = useState(false);
+  const hasSavedFees = useRef(false);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("stablepath-fees");
+      if (stored) {
+        setFees(JSON.parse(stored) as FeeMatrix);
+        hasSavedFees.current = true;
+      }
+    } catch {
+      // Invalid local preferences fall back to the maintained defaults.
+    }
+  }, []);
+
+  const refreshMarket = useCallback(async (manual = false) => {
+    if (manual) setRefreshing(true);
+    try {
+      const response = await fetch("/api/market", { cache: "no-store" });
+      if (!response.ok) throw new Error("quote fetch failed");
+      const payload = (await response.json()) as MarketPayload;
+      setMarket(payload);
+      if (!hasSavedFees.current) {
+        setFees((current) => mergeFees(current, payload.liveFees));
+      }
+    } catch {
+      setMarket((current) => ({ ...current, hasFallback: true }));
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshMarket();
+    const interval = window.setInterval(() => refreshMarket(), 20_000);
+    return () => window.clearInterval(interval);
+  }, [refreshMarket]);
+
+  const routes = useMemo<RouteResult[]>(() => {
+    const parsedAmount = Number(amount.replaceAll(",", ""));
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) return [];
+
+    const candidates: RouteResult[] = [];
+    const activeExchanges =
+      selectedExchange === "all" ? EXCHANGES : [selectedExchange];
+
+    for (const exchange of activeExchanges) {
+      const foreign =
+        market.foreign.find((quote) => quote.exchange === exchange) ??
+        FALLBACK_MARKET.foreign[0];
+
+      for (const transferAsset of ASSETS) {
+        const converted = transferAsset !== asset;
+        let quantityAfterSwap = parsedAmount;
+
+        if (asset === "USDT" && transferAsset === "USDC") {
+          quantityAfterSwap =
+            (parsedAmount / foreign.ask) * (1 - EXCHANGE_FEES[exchange]);
+        } else if (asset === "USDC" && transferAsset === "USDT") {
+          quantityAfterSwap =
+            parsedAmount * foreign.bid * (1 - EXCHANGE_FEES[exchange]);
+        }
+
+        for (const chain of CHAINS[transferAsset]) {
+          const withdrawalFee = fees[exchange][transferAsset][chain];
+          if (
+            withdrawalFee === undefined ||
+            !Number.isFinite(withdrawalFee) ||
+            withdrawalFee < 0
+          ) {
+            continue;
+          }
+
+          const netQuantity = Math.max(0, quantityAfterSwap - withdrawalFee);
+          if (!netQuantity) continue;
+
+          for (const domestic of DOMESTIC_EXCHANGES) {
+            const domesticQuote = market.domestic.find(
+              (quote) =>
+                quote.exchange === domestic && quote.asset === transferAsset,
+            );
+            if (!domesticQuote) continue;
+
+            const execution = executeMarketSell(
+              netQuantity,
+              domesticQuote.bids,
+            );
+            const krw =
+              execution.grossKrw * (1 - DOMESTIC_FEES[domestic]);
+            const source: QuoteSource =
+              foreign.source === "live" && domesticQuote.source === "live"
+                ? "live"
+                : "fallback";
+
+            candidates.push({
+              id: [
+                exchange,
+                asset,
+                transferAsset,
+                chain,
+                domestic,
+              ].join("-"),
+              exchange,
+              startAsset: asset,
+              transferAsset,
+              domestic,
+              chain,
+              withdrawalFee,
+              quantityAfterSwap,
+              netQuantity,
+              ...execution,
+              krw,
+              source,
+              converted,
+            });
+          }
+        }
+      }
+    }
+
+    return candidates.sort((a, b) => {
+      if (a.fullyFillable !== b.fullyFillable) {
+        return a.fullyFillable ? -1 : 1;
+      }
+      if (!a.fullyFillable && !b.fullyFillable && a.fillRatio !== b.fillRatio) {
+        return b.fillRatio - a.fillRatio;
+      }
+      return b.krw - a.krw;
+    });
+  }, [amount, asset, fees, market, selectedExchange]);
+
+  const fullyFillableRoutes = routes.filter((route) => route.fullyFillable);
+  const best = fullyFillableRoutes[0];
+  const runnerUp = fullyFillableRoutes[1];
+  const numericAmount = Number(amount.replaceAll(",", "")) || 0;
+  const visibleRoutes = expandedRows ? routes : routes.slice(0, 8);
+
+  const updateFee = (
+    exchange: Exchange,
+    feeAsset: Asset,
+    chain: Chain,
+    value: string,
+  ) => {
+    const assetFees = { ...fees[exchange][feeAsset] };
+    if (value.trim() === "") {
+      delete assetFees[chain];
+    } else {
+      const parsed = Number(value);
+      assetFees[chain] =
+        Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+    }
+    const next: FeeMatrix = {
+      ...fees,
+      [exchange]: {
+        ...fees[exchange],
+        [feeAsset]: assetFees,
+      },
+    };
+    setFees(next);
+    hasSavedFees.current = true;
+    localStorage.setItem("stablepath-fees", JSON.stringify(next));
+  };
+
+  const resetFees = () => {
+    const next = mergeFees(DEFAULT_FEES, market.liveFees);
+    setFees(next);
+    hasSavedFees.current = false;
+    localStorage.removeItem("stablepath-fees");
+  };
+
+  return (
+    <main>
+      <header className="site-header">
+        <a className="brand" href="#top" aria-label="StablePath 홈">
+          <span className="brand-mark" aria-hidden="true">
+            S
+          </span>
+          <span>STABLEPATH</span>
+        </a>
+        <div className="header-actions">
+          <span
+            className={`live-status ${market.hasFallback ? "is-partial" : ""}`}
+          >
+            <span className="status-dot" />
+            {loading
+              ? "시세 연결 중"
+              : market.hasFallback
+                ? "일부 예상 시세"
+                : "실시간 연결"}
+          </span>
+          <button
+            className="ghost-button"
+            type="button"
+            onClick={() => setFeePanelOpen(true)}
+          >
+            수수료 편집
+          </button>
+        </div>
+      </header>
+
+      <section className="hero" id="top">
+        <div className="hero-copy">
+          <p className="eyebrow">OVERSEAS → KRW ROUTE FINDER</p>
+          <h1>
+            원화로 닿는
+            <br />
+            <span>가장 좋은 길.</span>
+          </h1>
+          <p className="hero-description">
+            해외거래소의 USDT·USDC를 어떤 자산과 체인으로 보내야 원화가
+            가장 많이 남는지, 체인별 출금 수수료와 국내 매수호가 잔량을
+            순서대로 소진해 실제 체결에 가까운 금액을 비교합니다.
+          </p>
+        </div>
+
+        <div className="calculator-card" aria-label="경로 계산 조건">
+          <div className="card-topline">
+            <span>보유 자산</span>
+            <button
+              className="refresh-button"
+              type="button"
+              onClick={() => refreshMarket(true)}
+              disabled={refreshing}
+            >
+              <span aria-hidden="true" className={refreshing ? "spin" : ""}>
+                ↻
+              </span>
+              {displayTime(market.updatedAt)}
+            </button>
+          </div>
+
+          <div className="asset-switch" role="group" aria-label="보유 자산 선택">
+            {ASSETS.map((item) => (
+              <button
+                type="button"
+                key={item}
+                className={asset === item ? "active" : ""}
+                onClick={() => setAsset(item)}
+                aria-pressed={asset === item}
+              >
+                <span className={`coin-dot ${item.toLowerCase()}`}>$</span>
+                {item}
+              </button>
+            ))}
+          </div>
+
+          <label className="amount-label" htmlFor="amount">
+            <span>수량</span>
+            <span>{asset}</span>
+          </label>
+          <input
+            id="amount"
+            className="amount-input"
+            inputMode="decimal"
+            value={amount}
+            onChange={(event) =>
+              setAmount(event.target.value.replace(/[^0-9.]/g, ""))
+            }
+            aria-describedby="amount-help"
+          />
+          <p id="amount-help" className="field-help">
+            전송 전 해외거래소에 보유한 수량을 입력하세요.
+          </p>
+
+          <div className="exchange-label">
+            <span>보유 거래소</span>
+            <span>전체 선택 시 4곳 동시 비교</span>
+          </div>
+          <div className="exchange-grid" role="group" aria-label="해외거래소 선택">
+            <button
+              type="button"
+              className={selectedExchange === "all" ? "active" : ""}
+              onClick={() => setSelectedExchange("all")}
+            >
+              전체
+            </button>
+            {EXCHANGES.map((exchange) => (
+              <button
+                type="button"
+                key={exchange}
+                className={selectedExchange === exchange ? "active" : ""}
+                onClick={() => setSelectedExchange(exchange)}
+              >
+                {exchange}
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="best-section" aria-live="polite">
+        <div className="best-card">
+          <div className="best-heading">
+            <div>
+              <p className="eyebrow lime">BEST ROUTE</p>
+              <h2>예상 원화 도착액</h2>
+            </div>
+            {best && (
+              <span className={`quote-badge ${best.source}`}>
+                {best.source === "live" ? "LIVE" : "ESTIMATE"}
+              </span>
+            )}
+          </div>
+
+          {best ? (
+            <>
+              <p className="arrival-value">
+                {krwFormatter.format(best.krw)}
+                <span>원</span>
+              </p>
+              <div className="best-meta">
+                <span>
+                  1 {asset}당{" "}
+                  <strong>
+                    {krwFormatter.format(best.krw / numericAmount)}원
+                  </strong>
+                </span>
+                {runnerUp && (
+                  <span>
+                    다음 경로보다{" "}
+                    <strong>
+                      +{krwFormatter.format(best.krw - runnerUp.krw)}원
+                    </strong>
+                  </span>
+                )}
+                <span>
+                  평균 매도가{" "}
+                  <strong>
+                    {krwFormatter.format(best.averageSellPrice)}원
+                  </strong>
+                </span>
+                <span>
+                  호가 슬리피지{" "}
+                  <strong>-{best.slippageBps.toFixed(1)}bp</strong>
+                </span>
+              </div>
+
+              <div className="route-flow">
+                <div className="route-node">
+                  <span className="node-icon">{best.exchange.slice(0, 1)}</span>
+                  <span className="node-kicker">출발</span>
+                  <strong>{best.exchange}</strong>
+                  <small>
+                    {coinFormatter.format(numericAmount)} {best.startAsset}
+                  </small>
+                </div>
+                {best.converted && (
+                  <>
+                    <span className="route-arrow">→</span>
+                    <div className="route-node">
+                      <span className="node-icon swap">↔</span>
+                      <span className="node-kicker">환전</span>
+                      <strong>
+                        {best.startAsset} → {best.transferAsset}
+                      </strong>
+                      <small>현물 수수료 반영</small>
+                    </div>
+                  </>
+                )}
+                <span className="route-arrow">→</span>
+                <div className="route-node">
+                  <span className="node-icon chain">⌁</span>
+                  <span className="node-kicker">전송</span>
+                  <strong>{CHAIN_LABELS[best.chain]}</strong>
+                  <small>
+                    -{best.withdrawalFee} {best.transferAsset}
+                  </small>
+                </div>
+                <span className="route-arrow">→</span>
+                <div className="route-node">
+                  <span className="node-icon domestic">
+                    {best.domestic.slice(0, 1)}
+                  </span>
+                  <span className="node-kicker">판매</span>
+                  <strong>{best.domestic}</strong>
+                  <small>
+                    {best.levelsUsed}개 매수호가 · 평균{" "}
+                    {krwFormatter.format(best.averageSellPrice)}원
+                  </small>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="empty-result">
+              <strong>
+                {numericAmount > 0
+                  ? "공개 호가 범위에서 전량 체결이 어렵습니다."
+                  : "수량을 입력해 주세요."}
+              </strong>
+              <span>
+                {numericAmount > 0
+                  ? "수량을 줄이거나 아래 경로별 호가 충족률을 확인하세요."
+                  : "0보다 큰 보유 수량이 필요합니다."}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <aside className="check-card">
+          <div className="check-number">01</div>
+          <p className="eyebrow">BEFORE TRANSFER</p>
+          <h3>체인 이름이 같아도, 입금 화면에서 한 번 더 확인하세요.</h3>
+          <ul>
+            <li>국내거래소 입금 일시중단 여부</li>
+            <li>본인 명의·트래블룰 조건</li>
+            <li>최소 입금액과 주소·메모</li>
+          </ul>
+          <button type="button" onClick={() => setFeePanelOpen(true)}>
+            현재 수수료 확인·수정 <span>↗</span>
+          </button>
+        </aside>
+      </section>
+
+      <section className="market-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">MARKET SNAPSHOT</p>
+            <h2>지금 비교에 쓰인 가격</h2>
+          </div>
+          <p>
+            전송 후 수량을 최우선 매수호가부터 순서대로 체결해 평균 매도가와
+            슬리피지를 계산합니다.
+          </p>
+        </div>
+
+        <div className="quote-grid">
+          <article className="quote-panel">
+            <div className="panel-title">
+              <span>해외 · USDC/USDT</span>
+              <small>매수 / 매도</small>
+            </div>
+            {market.foreign.map((quote) => (
+              <div className="quote-row" key={quote.exchange}>
+                <div>
+                  <span
+                    className={`exchange-avatar ${quote.exchange.toLowerCase()}`}
+                  >
+                    {quote.exchange.slice(0, 1)}
+                  </span>
+                  <strong>{quote.exchange}</strong>
+                </div>
+                <div>
+                  <span>{quote.bid.toFixed(4)}</span>
+                  <strong>{quote.ask.toFixed(4)}</strong>
+                  <i className={quote.source}>{quote.source}</i>
+                </div>
+              </div>
+            ))}
+          </article>
+
+          <article className="quote-panel domestic-quotes">
+            <div className="panel-title">
+              <span>국내 · KRW 매수호가</span>
+              <small>USDT / USDC</small>
+            </div>
+            {DOMESTIC_EXCHANGES.map((exchange) => {
+              const usdt = market.domestic.find(
+                (quote) =>
+                  quote.exchange === exchange && quote.asset === "USDT",
+              );
+              const usdc = market.domestic.find(
+                (quote) =>
+                  quote.exchange === exchange && quote.asset === "USDC",
+              );
+              return (
+                <div className="quote-row" key={exchange}>
+                  <div>
+                    <span
+                      className={`exchange-avatar ${exchange.toLowerCase()}`}
+                    >
+                      {exchange.slice(0, 1)}
+                    </span>
+                    <strong>{exchange}</strong>
+                  </div>
+                  <div>
+                    <span>{krwFormatter.format(usdt?.bid ?? 0)}원</span>
+                    <strong>{krwFormatter.format(usdc?.bid ?? 0)}원</strong>
+                    <i
+                      className={
+                        usdt?.source === "live" && usdc?.source === "live"
+                          ? "live"
+                          : "fallback"
+                      }
+                    >
+                      {usdt?.source === "live" && usdc?.source === "live"
+                        ? "live"
+                        : "estimate"}
+                    </i>
+                  </div>
+                </div>
+              );
+            })}
+          </article>
+        </div>
+
+        <div className="orderbook-section-heading">
+          <div>
+            <p className="eyebrow">DOMESTIC ORDERBOOK DEPTH</p>
+            <h3>국내 호가창 깊이</h3>
+          </div>
+          <p>
+            각 시장의 공개 호가 범위 안에서 전량 체결되는 경로만 최적 경로로
+            선정합니다.
+          </p>
+        </div>
+
+        <div className="orderbook-grid">
+          {market.domestic.map((quote) => {
+            const asks = quote.asks.slice(0, 3).reverse();
+            const bids = quote.bids.slice(0, 5);
+            const displayedLevels = [...asks, ...bids];
+            const maxSize = Math.max(
+              1,
+              ...displayedLevels.map((level) => level.size),
+            );
+            const bidLiquidity = quote.bids.reduce(
+              (total, level) => total + level.size,
+              0,
+            );
+
+            return (
+              <article
+                className="orderbook-card"
+                key={`${quote.exchange}-${quote.asset}`}
+              >
+                <div className="orderbook-card-header">
+                  <div>
+                    <span
+                      className={`exchange-avatar ${quote.exchange.toLowerCase()}`}
+                    >
+                      {quote.exchange.slice(0, 1)}
+                    </span>
+                    <div>
+                      <strong>{quote.exchange}</strong>
+                      <small>{quote.asset}/KRW</small>
+                    </div>
+                  </div>
+                  <div>
+                    <span>공개 매수 잔량</span>
+                    <strong>
+                      {coinFormatter.format(bidLiquidity)} {quote.asset}
+                    </strong>
+                  </div>
+                </div>
+                <div className="orderbook-column-labels">
+                  <span>가격(KRW)</span>
+                  <span>수량({quote.asset})</span>
+                </div>
+                <div className="orderbook-levels">
+                  {asks.map((level, index) => (
+                    <div
+                      className="orderbook-level ask"
+                      key={`ask-${level.price}-${index}`}
+                    >
+                      <span
+                        className="depth-bar"
+                        style={{ width: `${(level.size / maxSize) * 100}%` }}
+                      />
+                      <strong>{krwFormatter.format(level.price)}</strong>
+                      <span>{coinFormatter.format(level.size)}</span>
+                    </div>
+                  ))}
+                  <div className="orderbook-spread">
+                    <span>스프레드</span>
+                    <strong>
+                      {krwFormatter.format(Math.max(0, quote.ask - quote.bid))}원
+                    </strong>
+                  </div>
+                  {bids.map((level, index) => (
+                    <div
+                      className="orderbook-level bid"
+                      key={`bid-${level.price}-${index}`}
+                    >
+                      <span
+                        className="depth-bar"
+                        style={{ width: `${(level.size / maxSize) * 100}%` }}
+                      />
+                      <strong>{krwFormatter.format(level.price)}</strong>
+                      <span>{coinFormatter.format(level.size)}</span>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="ranking-section">
+        <div className="section-heading ranking-heading">
+          <div>
+            <p className="eyebrow">ALL ROUTES</p>
+            <h2>전체 경로 순위</h2>
+          </div>
+          <p>
+            체인 수수료 차감 후 국내 매수호가를 순차 소진합니다. 전량 체결
+            가능한 경로가 먼저 표시됩니다.
+          </p>
+        </div>
+
+        {routes.some((route) => !route.fullyFillable) && (
+          <div className="liquidity-notice">
+            <span>!</span>
+            <p>
+              공개 호가 범위보다 매도 수량이 큰 경로는 ‘호가 부족’으로
+              표시되며 최적 경로 선정에서 제외됩니다.
+            </p>
+          </div>
+        )}
+
+        <div className="route-table-wrap">
+          <table className="route-table">
+            <thead>
+              <tr>
+                <th>순위</th>
+                <th>경로</th>
+                <th>전송 자산</th>
+                <th>출금 수수료</th>
+                <th>호가 체결</th>
+                <th>예상 도착액</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRoutes.map((route, index) => (
+                <tr
+                  key={route.id}
+                  className={
+                    route.id === best?.id
+                      ? "winner"
+                      : route.fullyFillable
+                        ? ""
+                        : "partial"
+                  }
+                >
+                  <td>
+                    <span className="rank">{String(index + 1).padStart(2, "0")}</span>
+                  </td>
+                  <td>
+                    <strong>
+                      {route.exchange} <span>→</span>{" "}
+                      {CHAIN_LABELS[route.chain]} <span>→</span>{" "}
+                      {route.domestic}
+                    </strong>
+                    <small>
+                      {route.converted
+                        ? `${route.startAsset}를 ${route.transferAsset}로 환전 후 전송`
+                        : `${route.startAsset} 그대로 전송`}
+                    </small>
+                  </td>
+                  <td>
+                    <span className={`asset-pill ${route.transferAsset.toLowerCase()}`}>
+                      {route.transferAsset}
+                    </span>
+                    <small>{coinFormatter.format(route.netQuantity)} 도착</small>
+                  </td>
+                  <td>
+                    <strong>{route.withdrawalFee}</strong>
+                    <small>{route.transferAsset}</small>
+                  </td>
+                  <td>
+                    <strong>
+                      평균 {krwFormatter.format(route.averageSellPrice)}원
+                    </strong>
+                    <small>
+                      {route.levelsUsed}개 호가 · -{route.slippageBps.toFixed(1)}bp
+                    </small>
+                  </td>
+                  <td>
+                    <strong className="krw-result">
+                      {route.fullyFillable
+                        ? `${krwFormatter.format(route.krw)}원`
+                        : `호가 내 ${krwFormatter.format(route.krw)}원`}
+                    </strong>
+                    <small
+                      className={
+                        route.fullyFillable ? route.source : "liquidity-short"
+                      }
+                    >
+                      {route.fullyFillable
+                        ? route.source === "live"
+                          ? "실시간 호가 전량 체결"
+                          : "예상 호가 전량 체결"
+                        : `호가 부족 · ${(route.fillRatio * 100).toFixed(1)}% 체결`}
+                    </small>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {routes.length > 8 && (
+            <button
+              type="button"
+              className="more-routes"
+              onClick={() => setExpandedRows((current) => !current)}
+            >
+              {expandedRows ? "상위 8개만 보기" : `나머지 ${routes.length - 8}개 경로 보기`}
+              <span>{expandedRows ? "↑" : "↓"}</span>
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="chain-section">
+        <div>
+          <p className="eyebrow">SUPPORTED DEPOSIT CHAINS</p>
+          <h2>비교 대상 입금 체인</h2>
+        </div>
+        <div className="chain-group">
+          <span className="asset-pill usdt">USDT</span>
+          {CHAINS.USDT.map((chain) => (
+            <strong key={chain}>{CHAIN_LABELS[chain]}</strong>
+          ))}
+        </div>
+        <div className="chain-group">
+          <span className="asset-pill usdc">USDC</span>
+          {CHAINS.USDC.map((chain) => (
+            <strong key={chain}>{CHAIN_LABELS[chain]}</strong>
+          ))}
+        </div>
+      </section>
+
+      <section className="method-section">
+        <div className="method-heading">
+          <p className="eyebrow">CALCULATION METHOD</p>
+          <h2>이 순서로 원화 도착액을 계산합니다.</h2>
+        </div>
+        <ol className="method-grid">
+          <li>
+            <span>01</span>
+            <strong>전송 자산 결정</strong>
+            <p>보유 자산 그대로 전송하거나 해외 호가로 USDT↔USDC를 환전합니다.</p>
+          </li>
+          <li>
+            <span>02</span>
+            <strong>체인 수수료 차감</strong>
+            <p>선택한 거래소·자산·체인의 출금 수수료를 코인 수량에서 뺍니다.</p>
+          </li>
+          <li>
+            <span>03</span>
+            <strong>매수호가 순차 체결</strong>
+            <p>국내 최우선 매수호가부터 잔량만큼 소진해 평균 매도가를 구합니다.</p>
+          </li>
+          <li>
+            <span>04</span>
+            <strong>실수령 원화 비교</strong>
+            <p>국내 매도 수수료를 차감하고 전량 체결 가능한 경로끼리 비교합니다.</p>
+          </li>
+        </ol>
+        <div className="formula-line">
+          <span>예상 원화</span>
+          <strong>
+            Σ(호가별 체결수량 × 매수호가) × (1 − 국내 매도 수수료)
+          </strong>
+        </div>
+      </section>
+
+      <footer>
+        <div className="brand footer-brand">
+          <span className="brand-mark">S</span>
+          <span>STABLEPATH</span>
+        </div>
+        <p>
+          본 서비스의 결과는 예상치이며 투자 권유가 아닙니다. 실제 전송 전
+          거래소의 입출금 상태, 수수료, 최소 금액, 트래블룰 조건을 반드시
+          확인하세요.
+        </p>
+        <span>© 2026 STABLEPATH</span>
+      </footer>
+
+      {feePanelOpen && (
+        <div
+          className="fee-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setFeePanelOpen(false);
+          }}
+        >
+          <section
+            className="fee-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="fee-title"
+          >
+            <div className="fee-panel-header">
+              <div>
+                <p className="eyebrow">WITHDRAWAL FEES</p>
+                <h2 id="fee-title">출금 수수료 편집</h2>
+                <p>
+                  거래소 출금 화면에 표시된 현재 수수료를 자산 단위로
+                  입력하세요. 미지원·일시중단 체인은 값을 비워 두면 경로에서
+                  제외되며, 변경값은 이 기기에 저장됩니다.
+                </p>
+              </div>
+              <button
+                className="close-button"
+                type="button"
+                onClick={() => setFeePanelOpen(false)}
+                aria-label="닫기"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="fee-table-wrap">
+              {EXCHANGES.map((exchange) => (
+                <div className="fee-exchange" key={exchange}>
+                  <div className="fee-exchange-title">
+                    <span className={`exchange-avatar ${exchange.toLowerCase()}`}>
+                      {exchange.slice(0, 1)}
+                    </span>
+                    <strong>{exchange}</strong>
+                    {exchange === "Bitget" && (
+                      <small>공개 API 값 우선 반영</small>
+                    )}
+                  </div>
+                  {ASSETS.map((feeAsset) => (
+                    <div className="fee-asset-row" key={feeAsset}>
+                      <span className={`asset-pill ${feeAsset.toLowerCase()}`}>
+                        {feeAsset}
+                      </span>
+                      <div>
+                        {CHAINS[feeAsset].map((chain) => (
+                          <label key={chain}>
+                            <span>{CHAIN_LABELS[chain]}</span>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={fees[exchange][feeAsset][chain] ?? ""}
+                              onChange={(event) =>
+                                updateFee(
+                                  exchange,
+                                  feeAsset,
+                                  chain,
+                                  event.target.value,
+                                )
+                              }
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+
+            <div className="fee-panel-footer">
+              <p>
+                환전 수수료 0.10%, 국내 매도 수수료 0.05%와 공개 호가창
+                슬리피지를 반영합니다.
+              </p>
+              <div>
+                <button type="button" className="text-button" onClick={resetFees}>
+                  기본값 복원
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => setFeePanelOpen(false)}
+                >
+                  계산에 적용
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}
