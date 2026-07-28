@@ -550,8 +550,7 @@ async function loadBitgetFee(
               DOMESTIC_CHAINS[asset].includes(chain) &&
               Number.isFinite(fee) &&
               fee >= 0 &&
-              enabled(item.withdrawable) &&
-              enabled(item.rechargeable)
+              enabled(item.withdrawable)
             ) {
               fees[chain] = fee;
             }
