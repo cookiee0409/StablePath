@@ -64,6 +64,10 @@ type FeeMatrix = Record<
   Record<Asset, Partial<Record<Chain, number>>>
 >;
 type FeeSourceMatrix = Record<Exchange, Record<Asset, FeeSource>>;
+type TradingFeeSettings = {
+  foreign: Record<Exchange, number>;
+  domestic: Record<DomesticExchange, number>;
+};
 
 type RouteResult = {
   id: string;
@@ -73,6 +77,8 @@ type RouteResult = {
   domestic: DomesticExchange;
   chain: Chain;
   withdrawalFee: number;
+  totalWithdrawalFee: number;
+  transferCount: number;
   quantityAfterSwap: number;
   netQuantity: number;
   filledQuantity: number;
@@ -107,16 +113,17 @@ const CHAIN_LABELS: Record<Chain, string> = {
   Solana: "SOL",
 };
 
-const EXCHANGE_FEES: Record<Exchange, number> = {
-  Binance: 0.001,
-  Bitget: 0.001,
-  Bybit: 0.001,
-  OKX: 0.001,
-};
-
-const DOMESTIC_FEES: Record<DomesticExchange, number> = {
-  Upbit: 0.0005,
-  Bithumb: 0.0005,
+const DEFAULT_TRADING_FEES: TradingFeeSettings = {
+  foreign: {
+    Binance: 0.001,
+    Bitget: 0.001,
+    Bybit: 0.001,
+    OKX: 0.001,
+  },
+  domestic: {
+    Upbit: 0.0005,
+    Bithumb: 0.0004,
+  },
 };
 
 function fallbackOrderbook(
@@ -528,17 +535,24 @@ function executeMarketSell(quantity: number, bids: OrderLevel[]) {
 export default function Home() {
   const [asset, setAsset] = useState<Asset>("USDT");
   const [amount, setAmount] = useState("10000");
+  const [transferCount, setTransferCount] = useState(1);
   const [selectedExchange, setSelectedExchange] = useState<Exchange | "all">(
     "all",
   );
+  const [selectedDomesticExchange, setSelectedDomesticExchange] =
+    useState<DomesticExchange>("Upbit");
   const [market, setMarket] = useState<MarketPayload>(FALLBACK_MARKET);
   const [fees, setFees] = useState<FeeMatrix>(DEFAULT_FEES);
+  const [tradingFees, setTradingFees] =
+    useState<TradingFeeSettings>(DEFAULT_TRADING_FEES);
   const [feeSources, setFeeSources] = useState<FeeSourceMatrix>(
     createManualFeeSources,
   );
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [feePanelOpen, setFeePanelOpen] = useState(false);
+  const [activeFeePanel, setActiveFeePanel] = useState<
+    "withdrawal" | "trading" | null
+  >(null);
   const [expandedRows, setExpandedRows] = useState(false);
   const hasSavedFees = useRef(false);
 
@@ -560,6 +574,27 @@ export default function Home() {
     return () => {
       if (restoreTimer !== undefined) window.clearTimeout(restoreTimer);
     };
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("stablepath-trading-fees");
+      if (stored) {
+        const saved = JSON.parse(stored) as Partial<TradingFeeSettings>;
+        setTradingFees({
+          foreign: {
+            ...DEFAULT_TRADING_FEES.foreign,
+            ...saved.foreign,
+          },
+          domestic: {
+            ...DEFAULT_TRADING_FEES.domestic,
+            ...saved.domestic,
+          },
+        });
+      }
+    } catch {
+      // Invalid local preferences fall back to the maintained defaults.
+    }
   }, []);
 
   const refreshMarket = useCallback(async (manual = false) => {
@@ -611,10 +646,13 @@ export default function Home() {
         if (converted && foreign?.source !== "live") continue;
         if (asset === "USDT" && transferAsset === "USDC") {
           quantityAfterSwap =
-            (parsedAmount / foreign!.ask) * (1 - EXCHANGE_FEES[exchange]);
+            (parsedAmount / foreign!.ask) *
+            (1 - tradingFees.foreign[exchange]);
         } else if (asset === "USDC" && transferAsset === "USDT") {
           quantityAfterSwap =
-            parsedAmount * foreign!.bid * (1 - EXCHANGE_FEES[exchange]);
+            parsedAmount *
+            foreign!.bid *
+            (1 - tradingFees.foreign[exchange]);
         }
 
         for (const chain of CHAINS[transferAsset]) {
@@ -627,7 +665,11 @@ export default function Home() {
             continue;
           }
 
-          const netQuantity = Math.max(0, quantityAfterSwap - withdrawalFee);
+          const totalWithdrawalFee = withdrawalFee * transferCount;
+          const netQuantity = Math.max(
+            0,
+            quantityAfterSwap - totalWithdrawalFee,
+          );
           if (!netQuantity) continue;
 
           for (const domestic of DOMESTIC_EXCHANGES) {
@@ -642,7 +684,7 @@ export default function Home() {
               domesticQuote.bids,
             );
             const krw =
-              execution.grossKrw * (1 - DOMESTIC_FEES[domestic]);
+              execution.grossKrw * (1 - tradingFees.domestic[domestic]);
             const feeSource = feeSources[exchange][transferAsset];
             const source: RouteSource =
               feeSource === "live" ? "live" : "estimate";
@@ -661,6 +703,8 @@ export default function Home() {
               domestic,
               chain,
               withdrawalFee,
+              totalWithdrawalFee,
+              transferCount,
               quantityAfterSwap,
               netQuantity,
               ...execution,
@@ -683,7 +727,16 @@ export default function Home() {
       }
       return b.krw - a.krw;
     });
-  }, [amount, asset, feeSources, fees, market, selectedExchange]);
+  }, [
+    amount,
+    asset,
+    feeSources,
+    fees,
+    market,
+    selectedExchange,
+    tradingFees,
+    transferCount,
+  ]);
 
   const fullyFillableRoutes = routes.filter((route) => route.fullyFillable);
   const best = fullyFillableRoutes[0];
@@ -732,6 +785,30 @@ export default function Home() {
     localStorage.removeItem("stablepath-fees");
   };
 
+  const updateTradingFee = (
+    group: keyof TradingFeeSettings,
+    exchange: Exchange | DomesticExchange,
+    percentageValue: string,
+  ) => {
+    const parsed = Number(percentageValue);
+    const rate =
+      Number.isFinite(parsed) && parsed >= 0 ? Math.min(parsed, 100) / 100 : 0;
+    const next: TradingFeeSettings = {
+      ...tradingFees,
+      [group]: {
+        ...tradingFees[group],
+        [exchange]: rate,
+      },
+    };
+    setTradingFees(next);
+    localStorage.setItem("stablepath-trading-fees", JSON.stringify(next));
+  };
+
+  const resetTradingFees = () => {
+    setTradingFees(DEFAULT_TRADING_FEES);
+    localStorage.removeItem("stablepath-trading-fees");
+  };
+
   const qualityIssues = [
     ...market.foreign
       .filter((quote) => quote.source !== "live")
@@ -773,13 +850,22 @@ export default function Home() {
                 ? "일부 예상 시세"
                 : "실시간 연결"}
           </span>
-          <button
-            className="ghost-button"
-            type="button"
-            onClick={() => setFeePanelOpen(true)}
-          >
-            수수료 편집
-          </button>
+          <div className="fee-edit-actions">
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => setActiveFeePanel("withdrawal")}
+            >
+              출금 수수료 편집
+            </button>
+            <button
+              className="ghost-button trading-fee-button"
+              type="button"
+              onClick={() => setActiveFeePanel("trading")}
+            >
+              거래 수수료 편집
+            </button>
+          </div>
         </div>
       </header>
 
@@ -801,31 +887,24 @@ export default function Home() {
         <div className="hero-copy">
           <p className="eyebrow">OVERSEAS → KRW ROUTE FINDER</p>
           <h1>
-            원화로 닿는
+            원화 효율
             <br />
-            <span>가장 좋은 길.</span>
+            <span>계산기.</span>
           </h1>
           <p className="hero-description">
-            해외거래소의 USDT·USDC를 어떤 자산과 체인으로 보내야 원화가
-            가장 많이 남는지, 체인별 출금 수수료와 국내 매수호가 잔량을
-            순서대로 소진해 실제 체결에 가까운 금액을 비교합니다.
+            해외거래소의 스테이블 코인을 어떤 자산과 체인으로 보내야 가장
+            효율이 좋은지 계산
+            <br />
+            체인별 출금 수수료와 국내 매수호가 잔량을 반영
           </p>
         </div>
 
         <div className="calculator-card" aria-label="경로 계산 조건">
           <div className="card-topline">
             <span>보유 자산</span>
-            <button
-              className="refresh-button"
-              type="button"
-              onClick={() => refreshMarket(true)}
-              disabled={refreshing}
-            >
-              <span aria-hidden="true" className={refreshing ? "spin" : ""}>
-                ↻
-              </span>
-              {displayTime(market.updatedAt)}
-            </button>
+            <span className="market-time">
+              시세 기준 {displayTime(market.updatedAt)}
+            </span>
           </div>
 
           <div className="asset-switch" role="group" aria-label="보유 자산 선택">
@@ -860,6 +939,34 @@ export default function Home() {
           <p id="amount-help" className="field-help">
             전송 전 해외거래소에 보유한 수량을 입력하세요.
           </p>
+
+          <div className="transfer-count-field">
+            <div className="exchange-label">
+              <span>전송 횟수</span>
+              <span>매회 출금 수수료 차감</span>
+            </div>
+            <div
+              className="transfer-count-buttons"
+              role="group"
+              aria-label="전송 횟수 선택"
+            >
+              {[1, 2, 3, 4].map((count) => (
+                <button
+                  type="button"
+                  key={count}
+                  className={transferCount === count ? "active" : ""}
+                  onClick={() => setTransferCount(count)}
+                  aria-pressed={transferCount === count}
+                >
+                  {count}회
+                </button>
+              ))}
+            </div>
+            <p className="field-help">
+              테스트 전송 후 나머지를 보내거나 여러 번 나눠 보낼 때의 총
+              출금 수수료를 계산합니다.
+            </p>
+          </div>
 
           <div className="exchange-label">
             <span>보유 거래소</span>
@@ -966,7 +1073,9 @@ export default function Home() {
                   <span className="node-kicker">전송</span>
                   <strong>{CHAIN_LABELS[best.chain]}</strong>
                   <small>
-                    -{best.withdrawalFee} {best.transferAsset}
+                    -{best.totalWithdrawalFee} {best.transferAsset}
+                    {best.transferCount > 1 &&
+                      ` (${best.withdrawalFee} × ${best.transferCount}회)`}
                   </small>
                 </div>
                 <span className="route-arrow">→</span>
@@ -1008,8 +1117,11 @@ export default function Home() {
             <li>본인 명의·트래블룰 조건</li>
             <li>최소 입금액과 주소·메모</li>
           </ul>
-          <button type="button" onClick={() => setFeePanelOpen(true)}>
-            현재 수수료 확인·수정 <span>↗</span>
+          <button
+            type="button"
+            onClick={() => setActiveFeePanel("withdrawal")}
+          >
+            현재 출금 수수료 확인·수정 <span>↗</span>
           </button>
         </aside>
       </section>
@@ -1121,94 +1233,128 @@ export default function Home() {
         <div className="orderbook-section-heading">
           <div>
             <p className="eyebrow">DOMESTIC ORDERBOOK DEPTH</p>
-            <h3>국내 호가창 깊이</h3>
+            <h3>국내 호가창 현황</h3>
           </div>
-          <p>
-            각 시장의 공개 호가 범위 안에서 전량 체결되는 경로만 최적 경로로
-            선정합니다.
-          </p>
+          <div className="orderbook-toolbar">
+            <div
+              className="domestic-exchange-tabs"
+              role="group"
+              aria-label="국내거래소 호가창 선택"
+            >
+              {DOMESTIC_EXCHANGES.map((exchange) => (
+                <button
+                  type="button"
+                  key={exchange}
+                  className={
+                    selectedDomesticExchange === exchange ? "active" : ""
+                  }
+                  onClick={() => setSelectedDomesticExchange(exchange)}
+                  aria-pressed={selectedDomesticExchange === exchange}
+                >
+                  {exchange === "Upbit" ? "업비트" : "빗썸"}
+                </button>
+              ))}
+            </div>
+            <button
+              className="orderbook-refresh-button"
+              type="button"
+              onClick={() => refreshMarket(true)}
+              disabled={refreshing}
+            >
+              <span aria-hidden="true" className={refreshing ? "spin" : ""}>
+                ↻
+              </span>
+              {refreshing ? "확인 중" : "실시간 새로고침"}
+            </button>
+            <small>최근 확인 {displayTime(market.updatedAt)}</small>
+          </div>
         </div>
 
         <div className="orderbook-grid">
           {market.domestic
-            .filter((quote) => quote.source !== "unavailable")
+            .filter(
+              (quote) =>
+                quote.source !== "unavailable" &&
+                quote.exchange === selectedDomesticExchange,
+            )
             .map((quote) => {
-            const asks = quote.asks.slice(0, 3).reverse();
-            const bids = quote.bids.slice(0, 5);
-            const displayedLevels = [...asks, ...bids];
-            const maxSize = Math.max(
-              1,
-              ...displayedLevels.map((level) => level.size),
-            );
-            const bidLiquidity = quote.bids.reduce(
-              (total, level) => total + level.size,
-              0,
-            );
+              const asks = quote.asks.slice(0, 5).reverse();
+              const bids = quote.bids.slice(0, 8);
+              const displayedLevels = [...asks, ...bids];
+              const maxSize = Math.max(
+                1,
+                ...displayedLevels.map((level) => level.size),
+              );
+              const bidLiquidity = quote.bids.reduce(
+                (total, level) => total + level.size,
+                0,
+              );
 
-            return (
-              <article
-                className="orderbook-card"
-                key={`${quote.exchange}-${quote.asset}`}
-              >
-                <div className="orderbook-card-header">
-                  <div>
-                    <span
-                      className={`exchange-avatar ${quote.exchange.toLowerCase()}`}
-                    >
-                      {quote.exchange.slice(0, 1)}
-                    </span>
+              return (
+                <article
+                  className="orderbook-card"
+                  key={`${quote.exchange}-${quote.asset}`}
+                >
+                  <div className="orderbook-card-header">
                     <div>
-                      <strong>{quote.exchange}</strong>
-                      <small>{quote.asset}/KRW</small>
-                    </div>
-                  </div>
-                  <div>
-                    <span>공개 매수 잔량</span>
-                    <strong>
-                      {coinFormatter.format(bidLiquidity)} {quote.asset}
-                    </strong>
-                  </div>
-                </div>
-                <div className="orderbook-column-labels">
-                  <span>가격(KRW)</span>
-                  <span>수량({quote.asset})</span>
-                </div>
-                <div className="orderbook-levels">
-                  {asks.map((level, index) => (
-                    <div
-                      className="orderbook-level ask"
-                      key={`ask-${level.price}-${index}`}
-                    >
                       <span
-                        className="depth-bar"
-                        style={{ width: `${(level.size / maxSize) * 100}%` }}
-                      />
-                      <strong>{krwFormatter.format(level.price)}</strong>
-                      <span>{coinFormatter.format(level.size)}</span>
+                        className={`exchange-avatar ${quote.exchange.toLowerCase()}`}
+                      >
+                        {quote.exchange.slice(0, 1)}
+                      </span>
+                      <div>
+                        <strong>{quote.exchange}</strong>
+                        <small>{quote.asset}/KRW</small>
+                      </div>
                     </div>
-                  ))}
-                  <div className="orderbook-spread">
-                    <span>스프레드</span>
-                    <strong>
-                      {krwFormatter.format(Math.max(0, quote.ask - quote.bid))}원
-                    </strong>
+                    <div>
+                      <span>공개 매수 잔량</span>
+                      <strong>
+                        {coinFormatter.format(bidLiquidity)} {quote.asset}
+                      </strong>
+                    </div>
                   </div>
-                  {bids.map((level, index) => (
-                    <div
-                      className="orderbook-level bid"
-                      key={`bid-${level.price}-${index}`}
-                    >
-                      <span
-                        className="depth-bar"
-                        style={{ width: `${(level.size / maxSize) * 100}%` }}
-                      />
-                      <strong>{krwFormatter.format(level.price)}</strong>
-                      <span>{coinFormatter.format(level.size)}</span>
+                  <div className="orderbook-column-labels">
+                    <span>가격(KRW)</span>
+                    <span>수량({quote.asset})</span>
+                  </div>
+                  <div className="orderbook-levels">
+                    {asks.map((level, index) => (
+                      <div
+                        className="orderbook-level ask"
+                        key={`ask-${level.price}-${index}`}
+                      >
+                        <span
+                          className="depth-bar"
+                          style={{ width: `${(level.size / maxSize) * 100}%` }}
+                        />
+                        <strong>{krwFormatter.format(level.price)}</strong>
+                        <span>{coinFormatter.format(level.size)}</span>
+                      </div>
+                    ))}
+                    <div className="orderbook-spread">
+                      <span>스프레드</span>
+                      <strong>
+                        {krwFormatter.format(Math.max(0, quote.ask - quote.bid))}
+                        원
+                      </strong>
                     </div>
-                  ))}
-                </div>
-              </article>
-            );
+                    {bids.map((level, index) => (
+                      <div
+                        className="orderbook-level bid"
+                        key={`bid-${level.price}-${index}`}
+                      >
+                        <span
+                          className="depth-bar"
+                          style={{ width: `${(level.size / maxSize) * 100}%` }}
+                        />
+                        <strong>{krwFormatter.format(level.price)}</strong>
+                        <span>{coinFormatter.format(level.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              );
             })}
         </div>
       </section>
@@ -1281,8 +1427,13 @@ export default function Home() {
                     <small>{coinFormatter.format(route.netQuantity)} 도착</small>
                   </td>
                   <td>
-                    <strong>{route.withdrawalFee}</strong>
-                    <small>{route.transferAsset}</small>
+                    <strong>{route.totalWithdrawalFee}</strong>
+                    <small>
+                      {route.transferAsset}
+                      {route.transferCount > 1
+                        ? ` · ${route.withdrawalFee} × ${route.transferCount}회`
+                        : " · 1회"}
+                    </small>
                   </td>
                   <td>
                     <strong>
@@ -1360,7 +1511,10 @@ export default function Home() {
           <li>
             <span>02</span>
             <strong>체인 수수료 차감</strong>
-            <p>선택한 거래소·자산·체인의 출금 수수료를 코인 수량에서 뺍니다.</p>
+            <p>
+              선택한 거래소·자산·체인의 출금 수수료에 전송 횟수를 곱해 코인
+              수량에서 뺍니다.
+            </p>
           </li>
           <li>
             <span>03</span>
@@ -1376,7 +1530,8 @@ export default function Home() {
         <div className="formula-line">
           <span>예상 원화</span>
           <strong>
-            Σ(호가별 체결수량 × 매수호가) × (1 − 국내 매도 수수료)
+            [환전 후 수량 − (회당 출금 수수료 × 전송 횟수)]을 호가별 체결 ×
+            (1 − 국내 매도 수수료)
           </strong>
         </div>
       </section>
@@ -1394,12 +1549,12 @@ export default function Home() {
         <span>© 2026 STABLEPATH</span>
       </footer>
 
-      {feePanelOpen && (
+      {activeFeePanel === "withdrawal" && (
         <div
           className="fee-overlay"
           role="presentation"
           onMouseDown={(event) => {
-            if (event.currentTarget === event.target) setFeePanelOpen(false);
+            if (event.currentTarget === event.target) setActiveFeePanel(null);
           }}
         >
           <section
@@ -1418,12 +1573,12 @@ export default function Home() {
                   제외되며, 변경값은 이 기기에 저장됩니다.
                 </p>
               </div>
-              <button
-                className="close-button"
-                type="button"
-                onClick={() => setFeePanelOpen(false)}
-                aria-label="닫기"
-              >
+                <button
+                  className="close-button"
+                  type="button"
+                  onClick={() => setActiveFeePanel(null)}
+                  aria-label="닫기"
+                >
                 ×
               </button>
             </div>
@@ -1478,10 +1633,16 @@ export default function Home() {
             </div>
 
             <div className="fee-panel-footer">
-              <p>
-                환전 수수료 0.10%, 국내 매도 수수료 0.05%와 공개 호가창
-                슬리피지를 반영합니다.
-              </p>
+              <div className="fee-panel-notes">
+                <p>
+                  입력한 회당 출금 수수료에 선택한 전송 횟수를 곱해
+                  계산합니다.
+                </p>
+                <p className="fee-caution">
+                  실제 값과 차이가 있을 수 있으므로, 거래 전 본인이 반드시
+                  확인해야 합니다.
+                </p>
+              </div>
               <div>
                 <button type="button" className="text-button" onClick={resetFees}>
                   기본값 복원
@@ -1489,7 +1650,164 @@ export default function Home() {
                 <button
                   type="button"
                   className="primary-button"
-                  onClick={() => setFeePanelOpen(false)}
+                  onClick={() => setActiveFeePanel(null)}
+                >
+                  계산에 적용
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {activeFeePanel === "trading" && (
+        <div
+          className="fee-overlay"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setActiveFeePanel(null);
+          }}
+        >
+          <section
+            className="fee-panel trading-fee-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="trading-fee-title"
+          >
+            <div className="fee-panel-header">
+              <div>
+                <p className="eyebrow">TRADING FEES</p>
+                <h2 id="trading-fee-title">거래 수수료 편집</h2>
+                <p>
+                  거래소별 수수료율을 퍼센트(%)로 입력하세요. 해외 수수료는
+                  USDT↔USDC 환전이 발생하는 경로에만 적용되고, 국내 수수료는
+                  원화 매도 체결금액에 적용됩니다. 무료 이벤트 적용 시 0을
+                  입력할 수 있습니다.
+                </p>
+              </div>
+              <button
+                className="close-button"
+                type="button"
+                onClick={() => setActiveFeePanel(null)}
+                aria-label="닫기"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="trading-fee-grid">
+              <section className="trading-fee-group">
+                <div className="trading-fee-group-heading">
+                  <div>
+                    <p className="eyebrow">OVERSEAS SPOT</p>
+                    <h3>해외 스테이블 코인 환전</h3>
+                  </div>
+                  <span>USDT ↔ USDC 환전 시에만 적용</span>
+                </div>
+                <div className="trading-fee-list">
+                  {EXCHANGES.map((exchange) => (
+                    <label key={exchange}>
+                      <span>
+                        <i
+                          className={`exchange-avatar ${exchange.toLowerCase()}`}
+                        >
+                          {exchange.slice(0, 1)}
+                        </i>
+                        <strong>{exchange}</strong>
+                      </span>
+                      <span className="percentage-input">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={Number(
+                            (tradingFees.foreign[exchange] * 100).toFixed(4),
+                          )}
+                          onChange={(event) =>
+                            updateTradingFee(
+                              "foreign",
+                              exchange,
+                              event.target.value,
+                            )
+                          }
+                        />
+                        <b>%</b>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              <section className="trading-fee-group">
+                <div className="trading-fee-group-heading">
+                  <div>
+                    <p className="eyebrow">DOMESTIC SELL</p>
+                    <h3>국내 원화 매도</h3>
+                  </div>
+                  <span>기본값: 업비트 0.05% · 빗썸 0.04%</span>
+                </div>
+                <div className="trading-fee-list domestic-fee-list">
+                  {DOMESTIC_EXCHANGES.map((exchange) => (
+                    <label key={exchange}>
+                      <span>
+                        <i
+                          className={`exchange-avatar ${exchange.toLowerCase()}`}
+                        >
+                          {exchange.slice(0, 1)}
+                        </i>
+                        <strong>
+                          {exchange === "Upbit" ? "업비트" : "빗썸"}
+                        </strong>
+                      </span>
+                      <span className="percentage-input">
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          step="0.01"
+                          value={Number(
+                            (tradingFees.domestic[exchange] * 100).toFixed(4),
+                          )}
+                          onChange={(event) =>
+                            updateTradingFee(
+                              "domestic",
+                              exchange,
+                              event.target.value,
+                            )
+                          }
+                        />
+                        <b>%</b>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+            </div>
+
+            <div className="fee-panel-footer">
+              <div className="fee-panel-notes">
+                <p>
+                  기존의 환전 수수료 0.10%는 해외거래소에서 스테이블 코인을
+                  서로 바꿀 때 적용한 현물 거래 수수료입니다.
+                </p>
+                <p className="fee-caution">
+                  실제 값과 차이가 있을 수 있으므로, 거래 전 본인이 반드시
+                  확인해야 합니다.
+                </p>
+              </div>
+              <div>
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={resetTradingFees}
+                >
+                  기본값 복원
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => setActiveFeePanel(null)}
                 >
                   계산에 적용
                 </button>

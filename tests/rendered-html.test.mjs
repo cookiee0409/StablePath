@@ -30,10 +30,10 @@ test("server-renders the StablePath product page", async () => {
 
   const html = await response.text();
   assert.match(html, /StablePath/);
-  assert.match(html, /스테이블코인 원화 전송 경로 비교/);
-  assert.match(html, /원화로 닿는/);
+  assert.match(html, /원화 효율 계산기/);
+  assert.match(html, /원화 효율/);
   assert.match(html, /전체 경로 순위/);
-  assert.match(html, /\/og\.png/);
+  assert.match(html, /\/og-v2\.png/);
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|react-loading-skeleton/);
 });
 
@@ -77,9 +77,17 @@ test("ships the finished product assets and removes starter markers", async () =
 
   assert.match(page, /BEST ROUTE/);
   assert.match(page, /WITHDRAWAL FEES/);
+  assert.match(page, /TRADING FEES/);
   assert.match(page, /DOMESTIC ORDERBOOK DEPTH/);
+  assert.match(page, /국내 호가창 현황/);
   assert.match(page, /CALCULATION METHOD/);
   assert.match(page, /executeMarketSell/);
+  assert.match(page, /totalWithdrawalFee = withdrawalFee \* transferCount/);
+  assert.match(page, /Bithumb: 0\.0004/);
+  assert.match(
+    page,
+    /실제 값과 차이가 있을 수 있으므로, 거래 전 본인이 반드시/,
+  );
   assert.match(page, /slippageBps/);
   assert.match(marketRoute, /bid_size/);
   assert.match(marketRoute, /ask_size/);
@@ -104,7 +112,7 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(layout, /generateMetadata/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(lockfile, /react-loading-skeleton/);
-  await access(new URL("../public/og.png", import.meta.url));
+  await access(new URL("../public/og-v2.png", import.meta.url));
   await assert.rejects(
     access(new URL("../app/_sites-preview", import.meta.url)),
   );

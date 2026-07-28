@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
 
-const title = "StablePath — 스테이블코인 원화 전송 경로 비교";
+const title = "StablePath — 원화 효율 계산기";
 const description =
-  "바이낸스·비트겟·바이빗·OKX에서 업비트·빗썸으로 USDT와 USDC를 전송해 원화로 바꾸는 최적 경로를 비교합니다.";
+  "해외거래소의 스테이블 코인을 어떤 자산과 체인으로 보내야 가장 효율이 좋은지 체인별 출금 수수료와 국내 매수호가 잔량을 반영해 계산합니다.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -24,10 +24,10 @@ export async function generateMetadata(): Promise<Metadata> {
       locale: "ko_KR",
       images: [
         {
-          url: `${origin}/og.png`,
+          url: `${origin}/og-v2.png`,
           width: 1736,
           height: 909,
-          alt: "StablePath — 원화로 닿는 가장 좋은 길",
+          alt: "StablePath — 원화 효율 계산기",
         },
       ],
     },
@@ -35,7 +35,7 @@ export async function generateMetadata(): Promise<Metadata> {
       card: "summary_large_image",
       title,
       description,
-      images: [`${origin}/og.png`],
+      images: [`${origin}/og-v2.png`],
     },
   };
 }
