@@ -37,18 +37,33 @@ test("server-renders the StablePath product page", async () => {
   assert.doesNotMatch(html, /codex-preview|SkeletonPreview|react-loading-skeleton/);
 });
 
-test("market API returns domestic orderbook depth for every KRW market", async () => {
+test("market API returns auditable market and fee states", async () => {
   const response = await render("/api/market");
   assert.equal(response.status, 200);
   const payload = await response.json();
 
+  assert.equal(payload.foreign.length, 4);
   assert.equal(payload.domestic.length, 4);
+  for (const quote of [...payload.foreign, ...payload.domestic]) {
+    assert.ok(["live", "stale", "unavailable"].includes(quote.source));
+    assert.ok(Number.isFinite(Date.parse(quote.checkedAt)));
+  }
   for (const quote of payload.domestic) {
     assert.ok(quote.bids.length > 0);
     assert.ok(quote.asks.length > 0);
     assert.ok(quote.bids[0].price > 0);
     assert.ok(quote.bids[0].size > 0);
   }
+  for (const asset of ["USDT", "USDC"]) {
+    const result = payload.liveFees.Bitget[asset];
+    assert.ok(result);
+    assert.equal(typeof result.fees, "object");
+    assert.ok(Array.isArray(result.supportedChains));
+    assert.ok(["live", "stale", "unavailable"].includes(result.source));
+    assert.ok(Number.isFinite(Date.parse(result.checkedAt)));
+  }
+  assert.ok(["live", "partial"].includes(payload.quality.quotes));
+  assert.ok(["live", "partial"].includes(payload.quality.fees));
 });
 
 test("ships the finished product assets and removes starter markers", async () => {
@@ -69,6 +84,18 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(marketRoute, /bid_size/);
   assert.match(marketRoute, /ask_size/);
   assert.match(marketRoute, /count=30/);
+  assert.match(marketRoute, /createLimiter\(4\)/);
+  assert.match(marketRoute, /data-api\.binance\.vision/);
+  assert.match(marketRoute, /api\.bytick\.com/);
+  assert.match(marketRoute, /supportedChains/);
+  assert.match(marketRoute, /market upstream request failed/);
+  assert.match(page, /converted && foreign\?\.source !== "live"/);
+  assert.match(page, /domesticQuote\.source !== "live"/);
+  assert.match(page, /bitget\.USDT\.fees/);
+  assert.doesNotMatch(
+    page,
+    /\.\.\.current\.Bitget\.USDT,\s*\.\.\.\(bitget\.USDT/s,
+  );
   assert.match(page, /Tron.*Ethereum.*Kaia.*Aptos/s);
   assert.match(page, /Ethereum.*Solana/s);
   assert.match(layout, /generateMetadata/);
@@ -79,3 +106,4 @@ test("ships the finished product assets and removes starter markers", async () =
     access(new URL("../app/_sites-preview", import.meta.url)),
   );
 });
+
