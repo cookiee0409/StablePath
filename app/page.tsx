@@ -6,21 +6,40 @@ type Asset = "USDT" | "USDC";
 type Exchange = "Binance" | "Bitget" | "Bybit" | "OKX";
 type DomesticExchange = "Upbit" | "Bithumb";
 type Chain = "Tron" | "Ethereum" | "Kaia" | "Aptos" | "Solana";
-type QuoteSource = "live" | "fallback";
+type QuoteSource = "live" | "stale" | "unavailable";
+type FeeSource = "live" | "stale" | "manual";
+type RouteSource = "live" | "estimate";
 type OrderLevel = {
   price: number;
   size: number;
 };
+type QuoteDiagnostics = {
+  checkedAt: string;
+  endpoint?: string;
+  latencyMs?: number;
+  reason?: string;
+  statusCode?: number;
+};
+type FeeAssetPayload = {
+  fees: Partial<Record<Chain, number>>;
+  supportedChains: Chain[];
+  source: QuoteSource;
+  checkedAt: string;
+  endpoint?: string;
+  latencyMs?: number;
+  reason?: string;
+  statusCode?: number;
+};
 
 type MarketPayload = {
-  foreign: Array<{
+  foreign: Array<QuoteDiagnostics & {
     exchange: Exchange;
     bid: number;
     ask: number;
     last: number;
     source: QuoteSource;
   }>;
-  domestic: Array<{
+  domestic: Array<QuoteDiagnostics & {
     exchange: DomesticExchange;
     asset: Asset;
     bid: number;
@@ -30,7 +49,11 @@ type MarketPayload = {
     source: QuoteSource;
   }>;
   liveFees?: {
-    Bitget?: Partial<Record<Asset, Partial<Record<Chain, number>>>>;
+    Bitget?: Partial<Record<Asset, FeeAssetPayload>>;
+  };
+  quality?: {
+    quotes: "live" | "partial";
+    fees: "live" | "partial";
   };
   updatedAt: string;
   hasFallback: boolean;
@@ -40,6 +63,7 @@ type FeeMatrix = Record<
   Exchange,
   Record<Asset, Partial<Record<Chain, number>>>
 >;
+type FeeSourceMatrix = Record<Exchange, Record<Asset, FeeSource>>;
 
 type RouteResult = {
   id: string;
@@ -62,7 +86,8 @@ type RouteResult = {
   levelsUsed: number;
   visibleBidLiquidity: number;
   krw: number;
-  source: QuoteSource;
+  source: RouteSource;
+  feeSource: FeeSource;
   converted: boolean;
 };
 
@@ -138,7 +163,9 @@ const FALLBACK_MARKET: MarketPayload = {
     bid: 0.9997,
     ask: 1.0003,
     last: 1,
-    source: "fallback",
+    source: "unavailable",
+    checkedAt: new Date(0).toISOString(),
+    reason: "CONNECTING",
   })),
   domestic: DOMESTIC_EXCHANGES.flatMap((exchange, exchangeIndex) =>
     ASSETS.map((asset, assetIndex) => {
@@ -150,7 +177,9 @@ const FALLBACK_MARKET: MarketPayload = {
         bid,
         ask,
         ...fallbackOrderbook(bid, ask, asset),
-        source: "fallback" as const,
+        source: "unavailable" as const,
+        checkedAt: new Date(0).toISOString(),
+        reason: "CONNECTING",
       };
     }),
   ),
@@ -172,13 +201,63 @@ function mergeFees(
 ): FeeMatrix {
   const bitget = liveFees?.Bitget;
   if (!bitget) return current;
+  const usdt =
+    bitget.USDT &&
+    bitget.USDT.source !== "unavailable" &&
+    Object.keys(bitget.USDT.fees).length > 0
+      ? { ...bitget.USDT.fees }
+      : { ...current.Bitget.USDT };
+  const usdc =
+    bitget.USDC &&
+    bitget.USDC.source !== "unavailable" &&
+    Object.keys(bitget.USDC.fees).length > 0
+      ? { ...bitget.USDC.fees }
+      : { ...current.Bitget.USDC };
   return {
     ...current,
     Bitget: {
-      USDT: { ...current.Bitget.USDT, ...(bitget.USDT ?? {}) },
-      USDC: { ...current.Bitget.USDC, ...(bitget.USDC ?? {}) },
+      USDT: usdt,
+      USDC: usdc,
     },
   };
+}
+
+function createManualFeeSources(): FeeSourceMatrix {
+  return Object.fromEntries(
+    EXCHANGES.map((exchange) => [
+      exchange,
+      { USDT: "manual", USDC: "manual" },
+    ]),
+  ) as FeeSourceMatrix;
+}
+
+function resolveFeeSources(
+  liveFees: MarketPayload["liveFees"],
+): FeeSourceMatrix {
+  const sources = createManualFeeSources();
+  for (const feeAsset of ASSETS) {
+    const result = liveFees?.Bitget?.[feeAsset];
+    if (
+      result &&
+      result.source !== "unavailable" &&
+      Object.keys(result.fees).length > 0
+    ) {
+      sources.Bitget[feeAsset] = result.source;
+    }
+  }
+  return sources;
+}
+
+function sourceLabel(source: QuoteSource) {
+  if (source === "live") return "live";
+  if (source === "stale") return "stale";
+  return "unavailable";
+}
+
+function feeSourceLabel(source: FeeSource) {
+  if (source === "live") return "실시간 수수료";
+  if (source === "stale") return "최근 수수료";
+  return "직접 입력 수수료";
 }
 
 function displayTime(iso: string) {
@@ -253,6 +332,9 @@ export default function Home() {
   );
   const [market, setMarket] = useState<MarketPayload>(FALLBACK_MARKET);
   const [fees, setFees] = useState<FeeMatrix>(DEFAULT_FEES);
+  const [feeSources, setFeeSources] = useState<FeeSourceMatrix>(
+    createManualFeeSources,
+  );
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [feePanelOpen, setFeePanelOpen] = useState(false);
@@ -260,15 +342,23 @@ export default function Home() {
   const hasSavedFees = useRef(false);
 
   useEffect(() => {
+    let restoreTimer: number | undefined;
     try {
       const stored = localStorage.getItem("stablepath-fees");
       if (stored) {
-        setFees(JSON.parse(stored) as FeeMatrix);
-        hasSavedFees.current = true;
+        const savedFees = JSON.parse(stored) as FeeMatrix;
+        restoreTimer = window.setTimeout(() => {
+          setFees(savedFees);
+          setFeeSources(createManualFeeSources());
+          hasSavedFees.current = true;
+        }, 0);
       }
     } catch {
       // Invalid local preferences fall back to the maintained defaults.
     }
+    return () => {
+      if (restoreTimer !== undefined) window.clearTimeout(restoreTimer);
+    };
   }, []);
 
   const refreshMarket = useCallback(async (manual = false) => {
@@ -279,7 +369,8 @@ export default function Home() {
       const payload = (await response.json()) as MarketPayload;
       setMarket(payload);
       if (!hasSavedFees.current) {
-        setFees((current) => mergeFees(current, payload.liveFees));
+        setFees(mergeFees(DEFAULT_FEES, payload.liveFees));
+        setFeeSources(resolveFeeSources(payload.liveFees));
       }
     } catch {
       setMarket((current) => ({ ...current, hasFallback: true }));
@@ -290,9 +381,12 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    refreshMarket();
+    const initialRefresh = window.setTimeout(() => refreshMarket(), 0);
     const interval = window.setInterval(() => refreshMarket(), 20_000);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearTimeout(initialRefresh);
+      window.clearInterval(interval);
+    };
   }, [refreshMarket]);
 
   const routes = useMemo<RouteResult[]>(() => {
@@ -304,20 +398,21 @@ export default function Home() {
       selectedExchange === "all" ? EXCHANGES : [selectedExchange];
 
     for (const exchange of activeExchanges) {
-      const foreign =
-        market.foreign.find((quote) => quote.exchange === exchange) ??
-        FALLBACK_MARKET.foreign[0];
+      const foreign = market.foreign.find(
+        (quote) => quote.exchange === exchange,
+      );
 
       for (const transferAsset of ASSETS) {
         const converted = transferAsset !== asset;
         let quantityAfterSwap = parsedAmount;
 
+        if (converted && foreign?.source !== "live") continue;
         if (asset === "USDT" && transferAsset === "USDC") {
           quantityAfterSwap =
-            (parsedAmount / foreign.ask) * (1 - EXCHANGE_FEES[exchange]);
+            (parsedAmount / foreign!.ask) * (1 - EXCHANGE_FEES[exchange]);
         } else if (asset === "USDC" && transferAsset === "USDT") {
           quantityAfterSwap =
-            parsedAmount * foreign.bid * (1 - EXCHANGE_FEES[exchange]);
+            parsedAmount * foreign!.bid * (1 - EXCHANGE_FEES[exchange]);
         }
 
         for (const chain of CHAINS[transferAsset]) {
@@ -338,7 +433,7 @@ export default function Home() {
               (quote) =>
                 quote.exchange === domestic && quote.asset === transferAsset,
             );
-            if (!domesticQuote) continue;
+            if (!domesticQuote || domesticQuote.source !== "live") continue;
 
             const execution = executeMarketSell(
               netQuantity,
@@ -346,10 +441,9 @@ export default function Home() {
             );
             const krw =
               execution.grossKrw * (1 - DOMESTIC_FEES[domestic]);
-            const source: QuoteSource =
-              foreign.source === "live" && domesticQuote.source === "live"
-                ? "live"
-                : "fallback";
+            const feeSource = feeSources[exchange][transferAsset];
+            const source: RouteSource =
+              feeSource === "live" ? "live" : "estimate";
 
             candidates.push({
               id: [
@@ -370,6 +464,7 @@ export default function Home() {
               ...execution,
               krw,
               source,
+              feeSource,
               converted,
             });
           }
@@ -386,7 +481,7 @@ export default function Home() {
       }
       return b.krw - a.krw;
     });
-  }, [amount, asset, fees, market, selectedExchange]);
+  }, [amount, asset, feeSources, fees, market, selectedExchange]);
 
   const fullyFillableRoutes = routes.filter((route) => route.fullyFillable);
   const best = fullyFillableRoutes[0];
@@ -416,6 +511,13 @@ export default function Home() {
       },
     };
     setFees(next);
+    setFeeSources((current) => ({
+      ...current,
+      [exchange]: {
+        ...current[exchange],
+        [feeAsset]: "manual",
+      },
+    }));
     hasSavedFees.current = true;
     localStorage.setItem("stablepath-fees", JSON.stringify(next));
   };
@@ -423,9 +525,31 @@ export default function Home() {
   const resetFees = () => {
     const next = mergeFees(DEFAULT_FEES, market.liveFees);
     setFees(next);
+    setFeeSources(resolveFeeSources(market.liveFees));
     hasSavedFees.current = false;
     localStorage.removeItem("stablepath-fees");
   };
+
+  const qualityIssues = [
+    ...market.foreign
+      .filter((quote) => quote.source !== "live")
+      .map(
+        (quote) =>
+          `${quote.exchange} 환전 시세 ${sourceLabel(quote.source)}`,
+      ),
+    ...market.domestic
+      .filter((quote) => quote.source !== "live")
+      .map(
+        (quote) =>
+          `${quote.exchange} ${quote.asset} 호가 ${sourceLabel(quote.source)}`,
+      ),
+    ...ASSETS.flatMap((feeAsset) => {
+      const result = market.liveFees?.Bitget?.[feeAsset];
+      return result && result.source !== "live"
+        ? [`Bitget ${feeAsset} 수수료 ${sourceLabel(result.source)}`]
+        : [];
+    }),
+  ];
 
   return (
     <main>
@@ -456,6 +580,20 @@ export default function Home() {
           </button>
         </div>
       </header>
+
+      {!loading && qualityIssues.length > 0 && (
+        <div className="data-quality-banner" role="status">
+          <span>!</span>
+          <div>
+            <strong>일부 실시간 데이터를 확인하지 못했습니다.</strong>
+            <p>
+              실시간 환전 시세나 국내 호가가 없는 경로는 추천에서 제외합니다.
+              수수료가 없을 때만 편집값을 예상치로 사용합니다.
+            </p>
+            <small>{qualityIssues.join(" · ")}</small>
+          </div>
+        </div>
+      )}
 
       <section className="hero" id="top">
         <div className="hero-copy">
@@ -556,7 +694,11 @@ export default function Home() {
             </div>
             {best && (
               <span className={`quote-badge ${best.source}`}>
-                {best.source === "live" ? "LIVE" : "ESTIMATE"}
+                {best.source === "live"
+                  ? "LIVE"
+                  : best.feeSource === "stale"
+                    ? "STALE FEE"
+                    : "MANUAL FEE"}
               </span>
             )}
           </div>
@@ -699,8 +841,16 @@ export default function Home() {
                   <strong>{quote.exchange}</strong>
                 </div>
                 <div>
-                  <span>{quote.bid.toFixed(4)}</span>
-                  <strong>{quote.ask.toFixed(4)}</strong>
+                  <span>
+                    {quote.source === "unavailable"
+                      ? "—"
+                      : quote.bid.toFixed(4)}
+                  </span>
+                  <strong>
+                    {quote.source === "unavailable"
+                      ? "—"
+                      : quote.ask.toFixed(4)}
+                  </strong>
                   <i className={quote.source}>{quote.source}</i>
                 </div>
               </div>
@@ -732,18 +882,32 @@ export default function Home() {
                     <strong>{exchange}</strong>
                   </div>
                   <div>
-                    <span>{krwFormatter.format(usdt?.bid ?? 0)}원</span>
-                    <strong>{krwFormatter.format(usdc?.bid ?? 0)}원</strong>
+                    <span>
+                      {usdt?.source === "unavailable"
+                        ? "—"
+                        : `${krwFormatter.format(usdt?.bid ?? 0)}원`}
+                    </span>
+                    <strong>
+                      {usdc?.source === "unavailable"
+                        ? "—"
+                        : `${krwFormatter.format(usdc?.bid ?? 0)}원`}
+                    </strong>
                     <i
                       className={
                         usdt?.source === "live" && usdc?.source === "live"
                           ? "live"
-                          : "fallback"
+                          : usdt?.source === "stale" ||
+                              usdc?.source === "stale"
+                            ? "stale"
+                            : "unavailable"
                       }
                     >
                       {usdt?.source === "live" && usdc?.source === "live"
                         ? "live"
-                        : "estimate"}
+                        : usdt?.source === "stale" ||
+                            usdc?.source === "stale"
+                          ? "stale"
+                          : "unavailable"}
                     </i>
                   </div>
                 </div>
@@ -764,7 +928,9 @@ export default function Home() {
         </div>
 
         <div className="orderbook-grid">
-          {market.domestic.map((quote) => {
+          {market.domestic
+            .filter((quote) => quote.source !== "unavailable")
+            .map((quote) => {
             const asks = quote.asks.slice(0, 3).reverse();
             const bids = quote.bids.slice(0, 5);
             const displayedLevels = [...asks, ...bids];
@@ -841,7 +1007,7 @@ export default function Home() {
                 </div>
               </article>
             );
-          })}
+            })}
         </div>
       </section>
 
@@ -938,7 +1104,7 @@ export default function Home() {
                       {route.fullyFillable
                         ? route.source === "live"
                           ? "실시간 호가 전량 체결"
-                          : "예상 호가 전량 체결"
+                          : `${feeSourceLabel(route.feeSource)} · 실시간 호가 체결`
                         : `호가 부족 · ${(route.fillRatio * 100).toFixed(1)}% 체결`}
                     </small>
                   </td>
@@ -1074,9 +1240,14 @@ export default function Home() {
                   </div>
                   {ASSETS.map((feeAsset) => (
                     <div className="fee-asset-row" key={feeAsset}>
-                      <span className={`asset-pill ${feeAsset.toLowerCase()}`}>
-                        {feeAsset}
-                      </span>
+                      <div className="fee-asset-label">
+                        <span className={`asset-pill ${feeAsset.toLowerCase()}`}>
+                          {feeAsset}
+                        </span>
+                        <small className={feeSources[exchange][feeAsset]}>
+                          {feeSourceLabel(feeSources[exchange][feeAsset])}
+                        </small>
+                      </div>
                       <div>
                         {CHAINS[feeAsset].map((chain) => (
                           <label key={chain}>
@@ -1128,3 +1299,4 @@ export default function Home() {
     </main>
   );
 }
+
