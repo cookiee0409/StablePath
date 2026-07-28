@@ -304,7 +304,39 @@ main {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+  margin-top: 10px;
+}
+
+.asset-choice-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
   margin: 14px 0 26px;
+}
+
+.asset-choice-field {
+  min-width: 0;
+}
+
+.asset-choice-label {
+  min-height: 42px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.asset-choice-label > span {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.asset-choice-label small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.25;
+  text-align: left;
 }
 
 .asset-switch button {
@@ -818,11 +850,13 @@ main {
   font-size: 11px;
 }
 
-.domestic-exchange-tabs {
+.domestic-exchange-tabs,
+.foreign-exchange-tabs {
   display: flex;
 }
 
 .domestic-exchange-tabs button,
+.foreign-exchange-tabs button,
 .orderbook-refresh-button {
   min-height: 42px;
   padding: 0 18px;
@@ -833,11 +867,13 @@ main {
   cursor: pointer;
 }
 
-.domestic-exchange-tabs button + button {
+.domestic-exchange-tabs button + button,
+.foreign-exchange-tabs button + button {
   border-left: 0;
 }
 
-.domestic-exchange-tabs button.active {
+.domestic-exchange-tabs button.active,
+.foreign-exchange-tabs button.active {
   background: var(--ink);
   color: var(--lime);
 }
@@ -858,6 +894,45 @@ main {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.foreign-orderbook-heading {
+  margin-top: 44px;
+}
+
+.orderbook-guide {
+  max-width: 600px;
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.foreign-orderbook-grid {
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 44px;
+}
+
+.foreign-orderbook-card {
+  width: 100%;
+}
+
+.orderbook-unavailable {
+  min-height: 180px;
+  padding: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px dashed var(--ink);
+  background: #f0f2ed;
+  text-align: center;
+}
+
+.orderbook-unavailable span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .orderbook-card {
@@ -1826,6 +1901,10 @@ footer > span {
     grid-template-columns: 1fr;
   }
 
+  .asset-choice-grid {
+    grid-template-columns: 1fr;
+  }
+
   .route-table-wrap {
     overflow-x: auto;
   }
@@ -2000,12 +2079,16 @@ footer > span {
   }
 
   .domestic-exchange-tabs,
+  .foreign-exchange-tabs,
   .orderbook-refresh-button {
     width: 100%;
   }
 
-  .domestic-exchange-tabs button {
+  .domestic-exchange-tabs button,
+  .foreign-exchange-tabs button {
     flex: 1;
+    padding-right: 8px;
+    padding-left: 8px;
   }
 
   .orderbook-refresh-button {

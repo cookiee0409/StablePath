@@ -37,6 +37,8 @@ type MarketPayload = {
     bid: number;
     ask: number;
     last: number;
+    bids: OrderLevel[];
+    asks: OrderLevel[];
     source: QuoteSource;
   }>;
   domestic: Array<QuoteDiagnostics & {
@@ -95,6 +97,13 @@ type RouteResult = {
   source: RouteSource;
   feeSource: FeeSource;
   converted: boolean;
+  foreignFilledInput: number;
+  foreignUnfilledInput: number;
+  foreignFillRatio: number;
+  foreignFullyFillable: boolean;
+  foreignAveragePrice: number;
+  foreignSlippageBps: number;
+  foreignLevelsUsed: number;
 };
 
 const EXCHANGES: Exchange[] = ["Binance", "Bitget", "Bybit", "OKX"];
@@ -145,6 +154,20 @@ function fallbackOrderbook(
   };
 }
 
+function fallbackForeignOrderbook(bid: number, ask: number) {
+  const sizes = [5_000, 10_000, 20_000, 35_000, 60_000, 100_000];
+  return {
+    bids: sizes.map((size, index) => ({
+      price: Math.max(0.0001, bid - index * 0.0001),
+      size,
+    })),
+    asks: sizes.map((size, index) => ({
+      price: ask + index * 0.0001,
+      size: size * 0.92,
+    })),
+  };
+}
+
 const DEFAULT_FEES: FeeMatrix = {
   Binance: {
     USDT: { Tron: 1.5, Ethereum: 0.4, Kaia: 0.02, Aptos: 0.1 },
@@ -155,12 +178,12 @@ const DEFAULT_FEES: FeeMatrix = {
     USDC: { Ethereum: 4, Solana: 1 },
   },
   Bybit: {
-    USDT: { Tron: 1, Ethereum: 4, Kaia: 0.1, Aptos: 0.2 },
-    USDC: { Ethereum: 4, Solana: 1 },
+    USDT: { Tron: 1, Ethereum: 0.8, Kaia: 0.1, Aptos: 0 },
+    USDC: { Ethereum: 0.8, Solana: 1 },
   },
   OKX: {
-    USDT: { Tron: 1, Ethereum: 4, Kaia: 0.1, Aptos: 0.2 },
-    USDC: { Ethereum: 4, Solana: 1 },
+    USDT: { Tron: 1.5, Ethereum: 0.63, Aptos: 0.0014 },
+    USDC: {},
   },
 };
 
@@ -170,6 +193,7 @@ const FALLBACK_MARKET: MarketPayload = {
     bid: 0.9997,
     ask: 1.0003,
     last: 1,
+    ...fallbackForeignOrderbook(0.9997, 1.0003),
     source: "unavailable",
     checkedAt: new Date(0).toISOString(),
     reason: "CONNECTING",
@@ -272,16 +296,30 @@ function browserNumeric(value: unknown) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
-function parseBrowserForeignQuote(
-  bidValue: unknown,
-  askValue: unknown,
+function parseBrowserForeignOrderbook(
+  bidValues: unknown,
+  askValues: unknown,
   lastValue?: unknown,
 ) {
-  const bid = browserNumeric(bidValue);
-  const ask = browserNumeric(askValue);
+  const parseLevels = (values: unknown, side: "bid" | "ask") => {
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((item) => {
+        if (!Array.isArray(item)) return null;
+        const price = browserNumeric(item[0]);
+        const size = browserNumeric(item[1]);
+        return price && size ? { price, size } : null;
+      })
+      .filter((item): item is OrderLevel => item !== null)
+      .sort((a, b) => (side === "bid" ? b.price - a.price : a.price - b.price));
+  };
+  const bids = parseLevels(bidValues, "bid");
+  const asks = parseLevels(askValues, "ask");
+  const bid = bids[0]?.price ?? 0;
+  const ask = asks[0]?.price ?? 0;
   const last = browserNumeric(lastValue) || (bid + ask) / 2;
   if (!bid || !ask || !last) throw new Error("No usable quote");
-  return { bid, ask, last };
+  return { bid, ask, last, bids, asks };
 }
 
 async function fetchBrowserJson(url: string) {
@@ -308,48 +346,44 @@ const BROWSER_FOREIGN_LOADERS: Record<
   Exchange,
   {
     url: string;
-    parse: (raw: unknown) => { bid: number; ask: number; last: number };
+    parse: (raw: unknown) => {
+      bid: number;
+      ask: number;
+      last: number;
+      bids: OrderLevel[];
+      asks: OrderLevel[];
+    };
   }
 > = {
   Binance: {
-    url: "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=USDCUSDT",
+    url: "https://data-api.binance.vision/api/v3/depth?symbol=USDCUSDT&limit=50",
     parse: (raw) => {
       const data = raw as Record<string, unknown>;
-      return parseBrowserForeignQuote(data.bidPrice, data.askPrice);
+      return parseBrowserForeignOrderbook(data.bids, data.asks);
     },
   },
   Bitget: {
-    url: "https://api.bitget.com/api/v3/market/tickers?category=SPOT&symbol=USDCUSDT",
+    url: "https://api.bitget.com/api/v2/spot/market/orderbook?symbol=USDCUSDT&type=step0&limit=50",
     parse: (raw) => {
-      const response = raw as { data?: Array<Record<string, unknown>> };
-      const data = response.data?.[0] ?? {};
-      return parseBrowserForeignQuote(
-        data.bid1Price,
-        data.ask1Price,
-        data.lastPrice,
-      );
+      const response = raw as { data?: Record<string, unknown> };
+      const data = response.data ?? {};
+      return parseBrowserForeignOrderbook(data.bids, data.asks);
     },
   },
   Bybit: {
-    url: "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDCUSDT",
+    url: "https://api.bybit.com/v5/market/orderbook?category=spot&symbol=USDCUSDT&limit=50",
     parse: (raw) => {
-      const response = raw as {
-        result?: { list?: Array<Record<string, unknown>> };
-      };
-      const data = response.result?.list?.[0] ?? {};
-      return parseBrowserForeignQuote(
-        data.bid1Price,
-        data.ask1Price,
-        data.lastPrice,
-      );
+      const response = raw as { result?: Record<string, unknown> };
+      const data = response.result ?? {};
+      return parseBrowserForeignOrderbook(data.b, data.a);
     },
   },
   OKX: {
-    url: "https://www.okx.com/api/v5/market/ticker?instId=USDC-USDT",
+    url: "https://www.okx.com/api/v5/market/books?instId=USDC-USDT&sz=50",
     parse: (raw) => {
       const response = raw as { data?: Array<Record<string, unknown>> };
       const data = response.data?.[0] ?? {};
-      return parseBrowserForeignQuote(data.bidPx, data.askPx, data.last);
+      return parseBrowserForeignOrderbook(data.bids, data.asks);
     },
   },
 };
@@ -532,8 +566,114 @@ function executeMarketSell(quantity: number, bids: OrderLevel[]) {
   };
 }
 
+function executeForeignSwap(
+  startAsset: Asset,
+  transferAsset: Asset,
+  quantity: number,
+  quote: MarketPayload["foreign"][number] | undefined,
+  feeRate: number,
+) {
+  if (startAsset === transferAsset) {
+    return {
+      outputQuantity: quantity,
+      foreignFilledInput: quantity,
+      foreignUnfilledInput: 0,
+      foreignFillRatio: 1,
+      foreignFullyFillable: true,
+      foreignAveragePrice: 1,
+      foreignSlippageBps: 0,
+      foreignLevelsUsed: 0,
+    };
+  }
+
+  if (!quote || quote.source !== "live") {
+    return {
+      outputQuantity: 0,
+      foreignFilledInput: 0,
+      foreignUnfilledInput: quantity,
+      foreignFillRatio: 0,
+      foreignFullyFillable: false,
+      foreignAveragePrice: 0,
+      foreignSlippageBps: 0,
+      foreignLevelsUsed: 0,
+    };
+  }
+
+  let foreignFilledInput = 0;
+  let grossOutput = 0;
+  let foreignLevelsUsed = 0;
+  let foreignAveragePrice = 0;
+  let foreignSlippageBps = 0;
+
+  if (startAsset === "USDC" && transferAsset === "USDT") {
+    const bids = [...quote.bids].sort((a, b) => b.price - a.price);
+    let remainingUsdc = quantity;
+    for (const level of bids) {
+      if (remainingUsdc <= 0.00000001) break;
+      const soldUsdc = Math.min(remainingUsdc, level.size);
+      if (soldUsdc <= 0) continue;
+      foreignFilledInput += soldUsdc;
+      grossOutput += soldUsdc * level.price;
+      remainingUsdc -= soldUsdc;
+      foreignLevelsUsed += 1;
+    }
+    foreignAveragePrice =
+      foreignFilledInput > 0 ? grossOutput / foreignFilledInput : 0;
+    const topBid = bids[0]?.price ?? 0;
+    foreignSlippageBps =
+      topBid > 0 && foreignAveragePrice > 0
+        ? Math.max(
+            0,
+            ((topBid - foreignAveragePrice) / topBid) * 10_000,
+          )
+        : 0;
+  } else {
+    const asks = [...quote.asks].sort((a, b) => a.price - b.price);
+    let remainingUsdt = quantity;
+    for (const level of asks) {
+      if (remainingUsdt <= 0.00000001) break;
+      const availableCost = level.price * level.size;
+      const spentUsdt = Math.min(remainingUsdt, availableCost);
+      const boughtUsdc = spentUsdt / level.price;
+      if (boughtUsdc <= 0) continue;
+      foreignFilledInput += spentUsdt;
+      grossOutput += boughtUsdc;
+      remainingUsdt -= spentUsdt;
+      foreignLevelsUsed += 1;
+    }
+    foreignAveragePrice =
+      grossOutput > 0 ? foreignFilledInput / grossOutput : 0;
+    const topAsk = asks[0]?.price ?? 0;
+    foreignSlippageBps =
+      topAsk > 0 && foreignAveragePrice > 0
+        ? Math.max(
+            0,
+            ((foreignAveragePrice - topAsk) / topAsk) * 10_000,
+          )
+        : 0;
+  }
+
+  const foreignUnfilledInput = Math.max(0, quantity - foreignFilledInput);
+  const foreignFillRatio = quantity > 0 ? foreignFilledInput / quantity : 0;
+  const foreignFullyFillable =
+    foreignUnfilledInput <= Math.max(0.000001, quantity * 0.000001);
+
+  return {
+    outputQuantity: grossOutput * (1 - feeRate),
+    foreignFilledInput,
+    foreignUnfilledInput,
+    foreignFillRatio,
+    foreignFullyFillable,
+    foreignAveragePrice,
+    foreignSlippageBps,
+    foreignLevelsUsed,
+  };
+}
+
 export default function Home() {
-  const [asset, setAsset] = useState<Asset>("USDT");
+  const [holdingAsset, setHoldingAsset] = useState<Asset>("USDT");
+  const [selectedTransferAsset, setSelectedTransferAsset] =
+    useState<Asset>("USDT");
   const [amount, setAmount] = useState("10000");
   const [transferCount, setTransferCount] = useState(1);
   const [selectedExchange, setSelectedExchange] = useState<Exchange | "all">(
@@ -541,6 +681,8 @@ export default function Home() {
   );
   const [selectedDomesticExchange, setSelectedDomesticExchange] =
     useState<DomesticExchange>("Upbit");
+  const [selectedForeignOrderbookExchange, setSelectedForeignOrderbookExchange] =
+    useState<Exchange>("Binance");
   const [market, setMarket] = useState<MarketPayload>(FALLBACK_MARKET);
   const [fees, setFees] = useState<FeeMatrix>(DEFAULT_FEES);
   const [tradingFees, setTradingFees] =
@@ -577,24 +719,30 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    let restoreTimer: number | undefined;
     try {
       const stored = localStorage.getItem("stablepath-trading-fees");
       if (stored) {
         const saved = JSON.parse(stored) as Partial<TradingFeeSettings>;
-        setTradingFees({
-          foreign: {
-            ...DEFAULT_TRADING_FEES.foreign,
-            ...saved.foreign,
-          },
-          domestic: {
-            ...DEFAULT_TRADING_FEES.domestic,
-            ...saved.domestic,
-          },
-        });
+        restoreTimer = window.setTimeout(() => {
+          setTradingFees({
+            foreign: {
+              ...DEFAULT_TRADING_FEES.foreign,
+              ...saved.foreign,
+            },
+            domestic: {
+              ...DEFAULT_TRADING_FEES.domestic,
+              ...saved.domestic,
+            },
+          });
+        }, 0);
       }
     } catch {
       // Invalid local preferences fall back to the maintained defaults.
     }
+    return () => {
+      if (restoreTimer !== undefined) window.clearTimeout(restoreTimer);
+    };
   }, []);
 
   const refreshMarket = useCallback(async (manual = false) => {
@@ -639,23 +787,19 @@ export default function Home() {
         (quote) => quote.exchange === exchange,
       );
 
-      for (const transferAsset of ASSETS) {
-        const converted = transferAsset !== asset;
-        let quantityAfterSwap = parsedAmount;
+      const transferAsset = selectedTransferAsset;
+      const converted = transferAsset !== holdingAsset;
+      const foreignExecution = executeForeignSwap(
+        holdingAsset,
+        transferAsset,
+        parsedAmount,
+        foreign,
+        tradingFees.foreign[exchange],
+      );
+      const quantityAfterSwap = foreignExecution.outputQuantity;
+      if (!quantityAfterSwap) continue;
 
-        if (converted && foreign?.source !== "live") continue;
-        if (asset === "USDT" && transferAsset === "USDC") {
-          quantityAfterSwap =
-            (parsedAmount / foreign!.ask) *
-            (1 - tradingFees.foreign[exchange]);
-        } else if (asset === "USDC" && transferAsset === "USDT") {
-          quantityAfterSwap =
-            parsedAmount *
-            foreign!.bid *
-            (1 - tradingFees.foreign[exchange]);
-        }
-
-        for (const chain of CHAINS[transferAsset]) {
+      for (const chain of CHAINS[transferAsset]) {
           const withdrawalFee = fees[exchange][transferAsset][chain];
           if (
             withdrawalFee === undefined ||
@@ -683,6 +827,11 @@ export default function Home() {
               netQuantity,
               domesticQuote.bids,
             );
+            const fullyFillable =
+              foreignExecution.foreignFullyFillable &&
+              execution.fullyFillable;
+            const fillRatio =
+              foreignExecution.foreignFillRatio * execution.fillRatio;
             const krw =
               execution.grossKrw * (1 - tradingFees.domestic[domestic]);
             const feeSource = feeSources[exchange][transferAsset];
@@ -692,13 +841,13 @@ export default function Home() {
             candidates.push({
               id: [
                 exchange,
-                asset,
+                holdingAsset,
                 transferAsset,
                 chain,
                 domestic,
               ].join("-"),
               exchange,
-              startAsset: asset,
+              startAsset: holdingAsset,
               transferAsset,
               domestic,
               chain,
@@ -708,14 +857,23 @@ export default function Home() {
               quantityAfterSwap,
               netQuantity,
               ...execution,
+              fullyFillable,
+              fillRatio,
               krw,
               source,
               feeSource,
               converted,
+              foreignFilledInput: foreignExecution.foreignFilledInput,
+              foreignUnfilledInput: foreignExecution.foreignUnfilledInput,
+              foreignFillRatio: foreignExecution.foreignFillRatio,
+              foreignFullyFillable:
+                foreignExecution.foreignFullyFillable,
+              foreignAveragePrice: foreignExecution.foreignAveragePrice,
+              foreignSlippageBps: foreignExecution.foreignSlippageBps,
+              foreignLevelsUsed: foreignExecution.foreignLevelsUsed,
             });
           }
         }
-      }
     }
 
     return candidates.sort((a, b) => {
@@ -729,11 +887,12 @@ export default function Home() {
     });
   }, [
     amount,
-    asset,
+    holdingAsset,
     feeSources,
     fees,
     market,
     selectedExchange,
+    selectedTransferAsset,
     tradingFees,
     transferCount,
   ]);
@@ -743,6 +902,9 @@ export default function Home() {
   const runnerUp = fullyFillableRoutes[1];
   const numericAmount = Number(amount.replaceAll(",", "")) || 0;
   const visibleRoutes = expandedRows ? routes : routes.slice(0, 8);
+  const selectedForeignQuote = market.foreign.find(
+    (quote) => quote.exchange === selectedForeignOrderbookExchange,
+  );
 
   const updateFee = (
     exchange: Exchange,
@@ -901,30 +1063,66 @@ export default function Home() {
 
         <div className="calculator-card" aria-label="경로 계산 조건">
           <div className="card-topline">
-            <span>보유 자산</span>
+            <span>전송 조건</span>
             <span className="market-time">
               시세 기준 {displayTime(market.updatedAt)}
             </span>
           </div>
 
-          <div className="asset-switch" role="group" aria-label="보유 자산 선택">
-            {ASSETS.map((item) => (
-              <button
-                type="button"
-                key={item}
-                className={asset === item ? "active" : ""}
-                onClick={() => setAsset(item)}
-                aria-pressed={asset === item}
+          <div className="asset-choice-grid">
+            <div className="asset-choice-field">
+              <div className="asset-choice-label">
+                <span>보유 자산</span>
+                <small>현재 가지고 있는 코인</small>
+              </div>
+              <div
+                className="asset-switch"
+                role="group"
+                aria-label="보유 자산 선택"
               >
-                <span className={`coin-dot ${item.toLowerCase()}`}>$</span>
-                {item}
-              </button>
-            ))}
+                {ASSETS.map((item) => (
+                  <button
+                    type="button"
+                    key={item}
+                    className={holdingAsset === item ? "active" : ""}
+                    onClick={() => setHoldingAsset(item)}
+                    aria-pressed={holdingAsset === item}
+                  >
+                    <span className={`coin-dot ${item.toLowerCase()}`}>$</span>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="asset-choice-field">
+              <div className="asset-choice-label">
+                <span>전송할 자산</span>
+                <small>국내거래소로 보낼 코인</small>
+              </div>
+              <div
+                className="asset-switch"
+                role="group"
+                aria-label="전송할 자산 선택"
+              >
+                {ASSETS.map((item) => (
+                  <button
+                    type="button"
+                    key={item}
+                    className={selectedTransferAsset === item ? "active" : ""}
+                    onClick={() => setSelectedTransferAsset(item)}
+                    aria-pressed={selectedTransferAsset === item}
+                  >
+                    <span className={`coin-dot ${item.toLowerCase()}`}>$</span>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <label className="amount-label" htmlFor="amount">
             <span>수량</span>
-            <span>{asset}</span>
+            <span>{holdingAsset}</span>
           </label>
           <input
             id="amount"
@@ -985,7 +1183,10 @@ export default function Home() {
                 type="button"
                 key={exchange}
                 className={selectedExchange === exchange ? "active" : ""}
-                onClick={() => setSelectedExchange(exchange)}
+                onClick={() => {
+                  setSelectedExchange(exchange);
+                  setSelectedForeignOrderbookExchange(exchange);
+                }}
               >
                 {exchange}
               </button>
@@ -1020,7 +1221,7 @@ export default function Home() {
               </p>
               <div className="best-meta">
                 <span>
-                  1 {asset}당{" "}
+                  1 {holdingAsset}당{" "}
                   <strong>
                     {krwFormatter.format(best.krw / numericAmount)}원
                   </strong>
@@ -1063,7 +1264,10 @@ export default function Home() {
                       <strong>
                         {best.startAsset} → {best.transferAsset}
                       </strong>
-                      <small>현물 수수료 반영</small>
+                      <small>
+                        평균 {best.foreignAveragePrice.toFixed(6)} ·{" "}
+                        {best.foreignLevelsUsed}개 호가
+                      </small>
                     </div>
                   </>
                 )}
@@ -1133,8 +1337,8 @@ export default function Home() {
             <h2>지금 비교에 쓰인 가격</h2>
           </div>
           <p>
-            전송 후 수량을 최우선 매수호가부터 순서대로 체결해 평균 매도가와
-            슬리피지를 계산합니다.
+            해외 교환은 USDC/USDT 호가를, 국내 판매는 KRW 매수호가를
+            순서대로 소진해 실제 체결 가능한 수량과 슬리피지를 계산합니다.
           </p>
         </div>
 
@@ -1228,6 +1432,154 @@ export default function Home() {
               );
             })}
           </article>
+        </div>
+
+        <div className="orderbook-section-heading foreign-orderbook-heading">
+          <div>
+            <p className="eyebrow">FOREIGN STABLE ORDERBOOK DEPTH</p>
+            <h3>해외 스테이블 교환 호가창</h3>
+            <p className="orderbook-guide">
+              USDC/USDT 기준 · 매도호가는 USDT로 USDC를 살 때, 매수호가는
+              USDC를 USDT로 팔 때 적용됩니다.
+            </p>
+          </div>
+          <div className="orderbook-toolbar">
+            <div
+              className="foreign-exchange-tabs"
+              role="group"
+              aria-label="해외거래소 호가창 선택"
+            >
+              {EXCHANGES.map((exchange) => (
+                <button
+                  type="button"
+                  key={exchange}
+                  className={
+                    selectedForeignOrderbookExchange === exchange
+                      ? "active"
+                      : ""
+                  }
+                  onClick={() => setSelectedForeignOrderbookExchange(exchange)}
+                  aria-pressed={selectedForeignOrderbookExchange === exchange}
+                >
+                  {exchange}
+                </button>
+              ))}
+            </div>
+            <button
+              className="orderbook-refresh-button"
+              type="button"
+              onClick={() => refreshMarket(true)}
+              disabled={refreshing}
+            >
+              <span aria-hidden="true" className={refreshing ? "spin" : ""}>
+                ↻
+              </span>
+              {refreshing ? "확인 중" : "실시간 새로고침"}
+            </button>
+            <small>최근 확인 {displayTime(market.updatedAt)}</small>
+          </div>
+        </div>
+
+        <div className="orderbook-grid foreign-orderbook-grid">
+          {selectedForeignQuote &&
+          selectedForeignQuote.source !== "unavailable" ? (
+            (() => {
+              const asks = selectedForeignQuote.asks.slice(0, 7).reverse();
+              const bids = selectedForeignQuote.bids.slice(0, 10);
+              const displayedLevels = [...asks, ...bids];
+              const maxSize = Math.max(
+                1,
+                ...displayedLevels.map((level) => level.size),
+              );
+              const visibleAskLiquidity = selectedForeignQuote.asks.reduce(
+                (total, level) => total + level.size,
+                0,
+              );
+              const visibleBidLiquidity = selectedForeignQuote.bids.reduce(
+                (total, level) => total + level.size,
+                0,
+              );
+
+              return (
+                <article className="orderbook-card foreign-orderbook-card">
+                  <div className="orderbook-card-header">
+                    <div>
+                      <span
+                        className={`exchange-avatar ${selectedForeignQuote.exchange.toLowerCase()}`}
+                      >
+                        {selectedForeignQuote.exchange.slice(0, 1)}
+                      </span>
+                      <div>
+                        <strong>{selectedForeignQuote.exchange}</strong>
+                        <small>USDC/USDT</small>
+                      </div>
+                    </div>
+                    <div>
+                      <span>공개 잔량 · 매도 / 매수</span>
+                      <strong>
+                        {coinFormatter.format(visibleAskLiquidity)} /{" "}
+                        {coinFormatter.format(visibleBidLiquidity)} USDC
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="orderbook-column-labels">
+                    <span>가격(USDT)</span>
+                    <span>수량(USDC)</span>
+                  </div>
+                  <div className="orderbook-levels">
+                    {asks.map((level, index) => (
+                      <div
+                        className="orderbook-level ask"
+                        key={`foreign-ask-${level.price}-${index}`}
+                      >
+                        <span
+                          className="depth-bar"
+                          style={{ width: `${(level.size / maxSize) * 100}%` }}
+                        />
+                        <strong>{level.price.toFixed(6)}</strong>
+                        <span>{coinFormatter.format(level.size)}</span>
+                      </div>
+                    ))}
+                    <div className="orderbook-spread">
+                      <span>스프레드</span>
+                      <strong>
+                        {Math.max(
+                          0,
+                          selectedForeignQuote.ask -
+                            selectedForeignQuote.bid,
+                        ).toFixed(6)}{" "}
+                        USDT
+                      </strong>
+                    </div>
+                    {bids.map((level, index) => (
+                      <div
+                        className="orderbook-level bid"
+                        key={`foreign-bid-${level.price}-${index}`}
+                      >
+                        <span
+                          className="depth-bar"
+                          style={{ width: `${(level.size / maxSize) * 100}%` }}
+                        />
+                        <strong>{level.price.toFixed(6)}</strong>
+                        <span>{coinFormatter.format(level.size)}</span>
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              );
+            })()
+          ) : (
+            <div className="orderbook-unavailable">
+              <strong>
+                {selectedForeignOrderbookExchange} 공개 호가를 불러오지
+                못했습니다.
+              </strong>
+              <span>
+                새로고침 후 다시 확인해 주세요. 환전 경로는 추천에서
+                제외됩니다.
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="orderbook-section-heading">
@@ -1366,8 +1718,8 @@ export default function Home() {
             <h2>전체 경로 순위</h2>
           </div>
           <p>
-            체인 수수료 차감 후 국내 매수호가를 순차 소진합니다. 전량 체결
-            가능한 경로가 먼저 표시됩니다.
+            해외 교환 호가, 체인 수수료, 국내 매수호가를 모두 반영합니다.
+            두 호가창에서 전량 체결 가능한 경로가 먼저 표시됩니다.
           </p>
         </div>
 
@@ -1375,8 +1727,8 @@ export default function Home() {
           <div className="liquidity-notice">
             <span>!</span>
             <p>
-              공개 호가 범위보다 매도 수량이 큰 경로는 ‘호가 부족’으로
-              표시되며 최적 경로 선정에서 제외됩니다.
+              해외 교환 또는 국내 매도 수량이 공개 호가 범위를 넘는 경로는
+              ‘호가 부족’으로 표시되며 최적 경로 선정에서 제외됩니다.
             </p>
           </div>
         )}
@@ -1440,7 +1792,11 @@ export default function Home() {
                       평균 {krwFormatter.format(route.averageSellPrice)}원
                     </strong>
                     <small>
-                      {route.levelsUsed}개 호가 · -{route.slippageBps.toFixed(1)}bp
+                      {route.converted
+                        ? `해외 ${route.foreignLevelsUsed}단계 (-${route.foreignSlippageBps.toFixed(1)}bp) · `
+                        : ""}
+                      국내 {route.levelsUsed}단계 (-
+                      {route.slippageBps.toFixed(1)}bp)
                     </small>
                   </td>
                   <td>
@@ -1458,7 +1814,9 @@ export default function Home() {
                         ? route.source === "live"
                           ? "실시간 호가 전량 체결"
                           : `${feeSourceLabel(route.feeSource)} · 실시간 호가 체결`
-                        : `호가 부족 · ${(route.fillRatio * 100).toFixed(1)}% 체결`}
+                        : !route.foreignFullyFillable
+                          ? `해외 교환 호가 부족 · ${(route.foreignFillRatio * 100).toFixed(1)}% 체결`
+                          : `국내 매수호가 부족 · ${(route.fillRatio * 100).toFixed(1)}% 체결`}
                     </small>
                   </td>
                 </tr>
@@ -1505,8 +1863,11 @@ export default function Home() {
         <ol className="method-grid">
           <li>
             <span>01</span>
-            <strong>전송 자산 결정</strong>
-            <p>보유 자산 그대로 전송하거나 해외 호가로 USDT↔USDC를 환전합니다.</p>
+            <strong>보유·전송 자산 선택</strong>
+            <p>
+              두 자산이 다르면 해외 USDC/USDT 호가를 순차 체결하고 해외
+              거래 수수료를 차감합니다.
+            </p>
           </li>
           <li>
             <span>02</span>
@@ -1530,8 +1891,8 @@ export default function Home() {
         <div className="formula-line">
           <span>예상 원화</span>
           <strong>
-            [환전 후 수량 − (회당 출금 수수료 × 전송 횟수)]을 호가별 체결 ×
-            (1 − 국내 매도 수수료)
+            [해외 호가별 교환 × (1 − 해외 거래 수수료) − (회당 출금 수수료
+            × 전송 횟수)]을 국내 호가별 체결 × (1 − 국내 매도 수수료)
           </strong>
         </div>
       </section>

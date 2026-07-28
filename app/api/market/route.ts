@@ -28,6 +28,8 @@ type ForeignQuote = {
   bid: number;
   ask: number;
   last: number;
+  bids: OrderLevel[];
+  asks: OrderLevel[];
   source: MarketSource;
   checkedAt: string;
   endpoint?: string;
@@ -267,6 +269,20 @@ function numeric(value: unknown, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function buildForeignFallbackBook(bid: number, ask: number) {
+  const sizes = [5_000, 10_000, 20_000, 35_000, 60_000, 100_000];
+  return {
+    bids: sizes.map((size, index) => ({
+      price: Math.max(0.0001, bid - index * 0.0001),
+      size,
+    })),
+    asks: sizes.map((size, index) => ({
+      price: ask + index * 0.0001,
+      size: size * 0.92,
+    })),
+  };
+}
+
 function buildFallbackBook(
   bid: number,
   ask: number,
@@ -286,16 +302,30 @@ function buildFallbackBook(
   };
 }
 
-function parseForeignQuote(
-  bidValue: unknown,
-  askValue: unknown,
-  lastValue: unknown,
+function parseForeignOrderbook(
+  bidValues: unknown,
+  askValues: unknown,
+  lastValue?: unknown,
 ) {
-  const bid = numeric(bidValue, 0);
-  const ask = numeric(askValue, 0);
+  const parseLevels = (values: unknown, side: "bid" | "ask") => {
+    if (!Array.isArray(values)) return [];
+    return values
+      .map((item) => {
+        if (!Array.isArray(item)) return null;
+        const price = numeric(item[0], 0);
+        const size = numeric(item[1], 0);
+        return price && size ? { price, size } : null;
+      })
+      .filter((item): item is OrderLevel => item !== null)
+      .sort((a, b) => (side === "bid" ? b.price - a.price : a.price - b.price));
+  };
+  const bids = parseLevels(bidValues, "bid");
+  const asks = parseLevels(askValues, "ask");
+  const bid = bids[0]?.price ?? 0;
+  const ask = asks[0]?.price ?? 0;
   const last = numeric(lastValue, (bid + ask) / 2);
   if (!bid || !ask || !last) throw new Error("No usable quote");
-  return { bid, ask, last };
+  return { bid, ask, last, bids, asks };
 }
 
 async function loadForeignQuote(
@@ -304,76 +334,64 @@ async function loadForeignQuote(
 ): Promise<ForeignQuote> {
   const specs: Record<
     keyof typeof FOREIGN_FALLBACK,
-    EndpointSpec<{ bid: number; ask: number; last: number }>[]
+    EndpointSpec<{
+      bid: number;
+      ask: number;
+      last: number;
+      bids: OrderLevel[];
+      asks: OrderLevel[];
+    }>[]
   > = {
     Binance: [
       {
-        url: "https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=USDCUSDT",
+        url: "https://data-api.binance.vision/api/v3/depth?symbol=USDCUSDT&limit=50",
         parse: (raw) => {
           const data = raw as Record<string, unknown>;
-          return parseForeignQuote(data.bidPrice, data.askPrice, undefined);
+          return parseForeignOrderbook(data.bids, data.asks);
         },
       },
       {
-        url: "https://api.binance.com/api/v3/ticker/bookTicker?symbol=USDCUSDT",
+        url: "https://api.binance.com/api/v3/depth?symbol=USDCUSDT&limit=50",
         parse: (raw) => {
           const data = raw as Record<string, unknown>;
-          return parseForeignQuote(data.bidPrice, data.askPrice, undefined);
+          return parseForeignOrderbook(data.bids, data.asks);
         },
       },
     ],
     Bitget: [
       {
-        url: "https://api.bitget.com/api/v3/market/tickers?category=SPOT&symbol=USDCUSDT",
+        url: "https://api.bitget.com/api/v2/spot/market/orderbook?symbol=USDCUSDT&type=step0&limit=50",
         parse: (raw) => {
           const response = raw as {
-            data?: Array<Record<string, unknown>>;
+            data?: Record<string, unknown>;
           };
-          const data = response.data?.[0] ?? {};
-          return parseForeignQuote(
-            data.bid1Price,
-            data.ask1Price,
-            data.lastPrice,
-          );
-        },
-      },
-      {
-        url: "https://api.bitget.com/api/v2/spot/market/tickers?symbol=USDCUSDT",
-        parse: (raw) => {
-          const response = raw as {
-            data?: Array<Record<string, unknown>>;
-          };
-          const data = response.data?.[0] ?? {};
-          return parseForeignQuote(data.bidPr, data.askPr, data.lastPr);
+          const data = response.data ?? {};
+          return parseForeignOrderbook(data.bids, data.asks);
         },
       },
     ],
     Bybit: [
-      "https://api.bybit.com/v5/market/tickers?category=spot&symbol=USDCUSDT",
-      "https://api.bytick.com/v5/market/tickers?category=spot&symbol=USDCUSDT",
+      "https://api.bybit.com/v5/market/orderbook?category=spot&symbol=USDCUSDT&limit=50",
+      "https://api.bytick.com/v5/market/orderbook?category=spot&symbol=USDCUSDT&limit=50",
     ].map((url) => ({
       url,
       parse: (raw: unknown) => {
         const response = raw as {
-          result?: { list?: Array<Record<string, unknown>> };
+          result?: Record<string, unknown>;
         };
-        const data = response.result?.list?.[0] ?? {};
-        return parseForeignQuote(
-          data.bid1Price,
-          data.ask1Price,
-          data.lastPrice,
-        );
+        const data = response.result ?? {};
+        return parseForeignOrderbook(data.b, data.a);
       },
     })),
     OKX: [
       {
-        url: "https://www.okx.com/api/v5/market/ticker?instId=USDC-USDT",
+        url: "https://www.okx.com/api/v5/market/books?instId=USDC-USDT&sz=50",
         parse: (raw) => {
           const response = raw as {
             data?: Array<Record<string, unknown>>;
           };
           const data = response.data?.[0] ?? {};
-          return parseForeignQuote(data.bidPx, data.askPx, data.last);
+          return parseForeignOrderbook(data.bids, data.asks);
         },
       },
     ],
@@ -406,6 +424,10 @@ async function loadForeignQuote(
     return {
       exchange,
       ...FOREIGN_FALLBACK[exchange],
+      ...buildForeignFallbackBook(
+        FOREIGN_FALLBACK[exchange].bid,
+        FOREIGN_FALLBACK[exchange].ask,
+      ),
       source: "unavailable",
       checkedAt,
       ...failure,

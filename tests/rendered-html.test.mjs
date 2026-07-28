@@ -48,7 +48,7 @@ test("market API returns auditable market and fee states", async () => {
     assert.ok(["live", "stale", "unavailable"].includes(quote.source));
     assert.ok(Number.isFinite(Date.parse(quote.checkedAt)));
   }
-  for (const quote of payload.domestic) {
+  for (const quote of [...payload.foreign, ...payload.domestic]) {
     assert.ok(quote.bids.length > 0);
     assert.ok(quote.asks.length > 0);
     assert.ok(quote.bids[0].price > 0);
@@ -78,10 +78,15 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(page, /BEST ROUTE/);
   assert.match(page, /WITHDRAWAL FEES/);
   assert.match(page, /TRADING FEES/);
+  assert.match(page, /FOREIGN STABLE ORDERBOOK DEPTH/);
+  assert.match(page, /해외 스테이블 교환 호가창/);
   assert.match(page, /DOMESTIC ORDERBOOK DEPTH/);
   assert.match(page, /국내 호가창 현황/);
   assert.match(page, /CALCULATION METHOD/);
   assert.match(page, /executeMarketSell/);
+  assert.match(page, /executeForeignSwap/);
+  assert.match(page, /보유 자산/);
+  assert.match(page, /전송할 자산/);
   assert.match(page, /totalWithdrawalFee = withdrawalFee \* transferCount/);
   assert.match(page, /Bithumb: 0\.0004/);
   assert.match(
@@ -89,6 +94,15 @@ test("ships the finished product assets and removes starter markers", async () =
     /USDT: \{ Tron: 1\.5, Ethereum: 0\.4, Kaia: 0\.02, Aptos: 0\.1 \}/,
   );
   assert.match(page, /USDC: \{ Ethereum: 0\.6, Solana: 0\.3 \}/);
+  assert.match(
+    page,
+    /USDT: \{ Tron: 1, Ethereum: 0\.8, Kaia: 0\.1, Aptos: 0 \}/,
+  );
+  assert.match(
+    page,
+    /USDT: \{ Tron: 1\.5, Ethereum: 0\.63, Aptos: 0\.0014 \}/,
+  );
+  assert.match(page, /USDC: \{\}/);
   assert.match(page, /출금 수수료 단위/);
   assert.match(page, /1 USDT, USDC 항목의 1은 1 USDC/);
   assert.match(
@@ -102,9 +116,12 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(marketRoute, /createLimiter\(4\)/);
   assert.match(marketRoute, /data-api\.binance\.vision/);
   assert.match(marketRoute, /api\.bytick\.com/);
+  assert.match(marketRoute, /api\/v3\/depth\?symbol=USDCUSDT/);
+  assert.match(marketRoute, /v5\/market\/orderbook/);
+  assert.match(marketRoute, /market\/books\?instId=USDC-USDT/);
   assert.match(marketRoute, /supportedChains/);
   assert.match(marketRoute, /market upstream request failed/);
-  assert.match(page, /converted && foreign\?\.source !== "live"/);
+  assert.match(page, /foreignExecution\.foreignFullyFillable/);
   assert.match(page, /domesticQuote\.source !== "live"/);
   assert.match(page, /bitget\.USDT\.fees/);
   assert.match(page, /recoverBrowserMarket/);
