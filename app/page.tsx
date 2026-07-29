@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type Asset = "USDT" | "USDC";
 type Exchange = "Binance" | "Bitget" | "Bybit" | "OKX";
@@ -68,6 +68,17 @@ type FeeMatrix = Record<
   FeeExchange,
   Record<Asset, Partial<Record<Chain, number>>>
 >;
+/**
+ * Sparse record of the cells the user edited by hand. `null` means the user
+ * cleared the field, which excludes the route but keeps the input editable —
+ * an absent key means "no override", so live fees keep flowing into that cell.
+ */
+type FeeOverrideMatrix = Partial<
+  Record<
+    FeeExchange,
+    Partial<Record<Asset, Partial<Record<Chain, number | null>>>>
+  >
+>;
 type FeeSourceMatrix = Record<FeeExchange, Record<Asset, FeeSource>>;
 type TradingFeeSettings = {
   foreign: Record<Exchange, number>;
@@ -122,6 +133,9 @@ const FEE_EXCHANGES: FeeExchange[] = [
   ...DOMESTIC_EXCHANGES,
 ];
 const ASSETS: Asset[] = ["USDT", "USDC"];
+const FEE_OVERRIDE_STORAGE_KEY = "stablepath-fee-overrides-v3";
+// Superseded by the sparse override format above, but still read once so
+// existing edits survive the upgrade.
 const WITHDRAWAL_FEE_STORAGE_KEY = "stablepath-fees-v2";
 const CHAINS: Record<Asset, Chain[]> = {
   USDT: ["Tron", "Ethereum", "Kaia", "Aptos"],
@@ -284,8 +298,20 @@ function createManualFeeSources(): FeeSourceMatrix {
   ) as FeeSourceMatrix;
 }
 
+function hasFeeOverride(
+  overrides: FeeOverrideMatrix,
+  exchange: FeeExchange,
+  feeAsset: Asset,
+) {
+  const cells = overrides[exchange]?.[feeAsset];
+  return Boolean(
+    cells && Object.values(cells).some((value) => value !== undefined),
+  );
+}
+
 function resolveFeeSources(
   liveFees: MarketPayload["liveFees"],
+  overrides: FeeOverrideMatrix,
 ): FeeSourceMatrix {
   const sources = createManualFeeSources();
   for (const feeAsset of ASSETS) {
@@ -293,12 +319,125 @@ function resolveFeeSources(
     if (
       result &&
       result.source !== "unavailable" &&
-      Object.keys(result.fees).length > 0
+      Object.keys(result.fees).length > 0 &&
+      !hasFeeOverride(overrides, "Bitget", feeAsset)
     ) {
       sources.Bitget[feeAsset] = result.source;
     }
   }
   return sources;
+}
+
+/**
+ * A chain the exchange publishes a fee for is a chain it can move the asset on.
+ * Withdrawal-fee presence is the only per-chain signal the public APIs expose,
+ * so it doubles as the deposit-support check on the receiving side.
+ */
+function supportsChain(
+  matrix: FeeMatrix,
+  exchange: FeeExchange,
+  feeAsset: Asset,
+  chain: Chain,
+) {
+  return matrix[exchange]?.[feeAsset]?.[chain] !== undefined;
+}
+
+/** Rebuilt from FEE_EXCHANGES so a malformed base can never leave a hole. */
+function applyFeeOverrides(
+  base: FeeMatrix,
+  overrides: FeeOverrideMatrix,
+): FeeMatrix {
+  const next = {} as FeeMatrix;
+  for (const exchange of FEE_EXCHANGES) {
+    next[exchange] = {
+      USDT: { ...base[exchange]?.USDT },
+      USDC: { ...base[exchange]?.USDC },
+    };
+    for (const feeAsset of ASSETS) {
+      const cells = overrides[exchange]?.[feeAsset];
+      if (!cells) continue;
+      for (const chain of CHAINS[feeAsset]) {
+        const value = cells[chain];
+        if (value === undefined) continue;
+        if (value === null) delete next[exchange][feeAsset][chain];
+        else next[exchange][feeAsset][chain] = value;
+      }
+    }
+  }
+  return next;
+}
+
+/**
+ * Validates every cell instead of casting. A corrupted or hand-edited blob used
+ * to reach the render path and crash it permanently, since the bad value was
+ * replayed from localStorage on every reload.
+ */
+function parseStoredFeeOverrides(raw: string): FeeOverrideMatrix {
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object") return {};
+  const container = parsed as Record<string, unknown>;
+  const isLegacyMatrix = !("overrides" in container);
+  const source = isLegacyMatrix ? container : container.overrides;
+  if (!source || typeof source !== "object") return {};
+
+  const overrides: FeeOverrideMatrix = {};
+  for (const exchange of FEE_EXCHANGES) {
+    const assets = (source as Record<string, unknown>)[exchange];
+    if (!assets || typeof assets !== "object") continue;
+    for (const feeAsset of ASSETS) {
+      const cells = (assets as Record<string, unknown>)[feeAsset];
+      if (!cells || typeof cells !== "object") continue;
+      for (const chain of CHAINS[feeAsset]) {
+        const value = (cells as Record<string, unknown>)[chain];
+        let next: number | null;
+        if (value === null) {
+          // The legacy format deleted a key on every empty input, so a missing
+          // or null cell there is more likely a mis-click than a real choice.
+          if (isLegacyMatrix) continue;
+          next = null;
+        } else if (
+          typeof value === "number" &&
+          Number.isFinite(value) &&
+          value >= 0
+        ) {
+          if (isLegacyMatrix && value === DEFAULT_FEES[exchange][feeAsset][chain])
+            continue;
+          next = value;
+        } else {
+          continue;
+        }
+        const exchangeCells = overrides[exchange] ?? {};
+        overrides[exchange] = {
+          ...exchangeCells,
+          [feeAsset]: { ...exchangeCells[feeAsset], [chain]: next },
+        };
+      }
+    }
+  }
+  return overrides;
+}
+
+function persistFeeOverrides(overrides: FeeOverrideMatrix) {
+  try {
+    localStorage.setItem(
+      FEE_OVERRIDE_STORAGE_KEY,
+      JSON.stringify({
+        version: 3,
+        savedAt: new Date().toISOString(),
+        overrides,
+      }),
+    );
+  } catch {
+    // Storage can be full or blocked; the edit still applies to this session.
+  }
+}
+
+function feeDraftKey(
+  exchange: FeeExchange,
+  feeAsset: Asset,
+  chain: Chain,
+) {
+  return `${exchange}-${feeAsset}-${chain}`;
 }
 
 function sourceLabel(source: QuoteSource) {
@@ -766,31 +905,41 @@ export default function Home() {
   const [orderbookView, setOrderbookView] =
     useState<OrderbookView>("domestic");
   const [market, setMarket] = useState<MarketPayload>(FALLBACK_MARKET);
-  const [fees, setFees] = useState<FeeMatrix>(DEFAULT_FEES);
+  const [feeOverrides, setFeeOverrides] = useState<FeeOverrideMatrix>({});
+  const [feeDrafts, setFeeDrafts] = useState<Record<string, string>>({});
   const [tradingFees, setTradingFees] =
     useState<TradingFeeSettings>(DEFAULT_TRADING_FEES);
-  const [feeSources, setFeeSources] = useState<FeeSourceMatrix>(
-    createManualFeeSources,
-  );
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [activeFeePanel, setActiveFeePanel] = useState<
     "withdrawal" | "trading" | null
   >(null);
   const [expandedRows, setExpandedRows] = useState(false);
-  const hasSavedFees = useRef(false);
+
+  // Live fees always refresh into the base matrix; manual edits are layered on
+  // top per cell, so editing one exchange no longer freezes all the others.
+  const baseFees = useMemo(
+    () => mergeFees(DEFAULT_FEES, market.liveFees),
+    [market.liveFees],
+  );
+  const fees = useMemo(
+    () => applyFeeOverrides(baseFees, feeOverrides),
+    [baseFees, feeOverrides],
+  );
+  const feeSources = useMemo(
+    () => resolveFeeSources(market.liveFees, feeOverrides),
+    [market.liveFees, feeOverrides],
+  );
 
   useEffect(() => {
     let restoreTimer: number | undefined;
     try {
-      const stored = localStorage.getItem(WITHDRAWAL_FEE_STORAGE_KEY);
+      const stored =
+        localStorage.getItem(FEE_OVERRIDE_STORAGE_KEY) ??
+        localStorage.getItem(WITHDRAWAL_FEE_STORAGE_KEY);
       if (stored) {
-        const savedFees = JSON.parse(stored) as FeeMatrix;
-        restoreTimer = window.setTimeout(() => {
-          setFees(savedFees);
-          setFeeSources(createManualFeeSources());
-          hasSavedFees.current = true;
-        }, 0);
+        const restored = parseStoredFeeOverrides(stored);
+        restoreTimer = window.setTimeout(() => setFeeOverrides(restored), 0);
       }
     } catch {
       // Invalid local preferences fall back to the maintained defaults.
@@ -835,10 +984,6 @@ export default function Home() {
       const payload = (await response.json()) as MarketPayload;
       const recovered = await recoverBrowserMarket(payload);
       setMarket(recovered);
-      if (!hasSavedFees.current) {
-        setFees(mergeFees(DEFAULT_FEES, recovered.liveFees));
-        setFeeSources(resolveFeeSources(recovered.liveFees));
-      }
     } catch {
       setMarket((current) => ({ ...current, hasFallback: true }));
     } finally {
@@ -899,6 +1044,11 @@ export default function Home() {
           if (!netQuantity) continue;
 
           for (const domestic of DOMESTIC_EXCHANGES) {
+            // The receiving exchange has to accept this asset on this chain.
+            // Depositing to an unsupported chain loses the funds permanently.
+            if (!supportsChain(baseFees, domestic, transferAsset, chain))
+              continue;
+
             const domesticQuote = market.domestic.find(
               (quote) =>
                 quote.exchange === domestic && quote.asset === transferAsset,
@@ -998,6 +1148,11 @@ export default function Home() {
           if (!netTransferQuantity) continue;
 
           for (const exchange of activeExchanges) {
+            // Same rule in reverse: the foreign exchange has to accept the
+            // deposit on the chain the domestic withdrawal goes out on.
+            if (!supportsChain(baseFees, exchange, holdingAsset, chain))
+              continue;
+
             const foreign = market.foreign.find(
               (quote) => quote.exchange === exchange,
             );
@@ -1088,6 +1243,7 @@ export default function Home() {
     amount,
     direction,
     holdingAsset,
+    baseFees,
     feeSources,
     fees,
     market,
@@ -1113,39 +1269,41 @@ export default function Home() {
     chain: Chain,
     value: string,
   ) => {
-    const assetFees = { ...fees[exchange][feeAsset] };
-    if (value.trim() === "") {
-      delete assetFees[chain];
-    } else {
-      const parsed = Number(value);
-      assetFees[chain] =
-        Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-    }
-    const next: FeeMatrix = {
-      ...fees,
-      [exchange]: {
-        ...fees[exchange],
-        [feeAsset]: assetFees,
-      },
-    };
-    setFees(next);
-    setFeeSources((current) => ({
+    // The raw text stays in a draft so partially typed values like "1." survive
+    // instead of collapsing to 1 — or, when empty, deleting the row outright.
+    setFeeDrafts((current) => ({
       ...current,
-      [exchange]: {
-        ...current[exchange],
-        [feeAsset]: "manual",
-      },
+      [feeDraftKey(exchange, feeAsset, chain)]: value,
     }));
-    hasSavedFees.current = true;
-    localStorage.setItem(WITHDRAWAL_FEE_STORAGE_KEY, JSON.stringify(next));
+
+    const trimmed = value.trim();
+    const parsed = Number(trimmed);
+    const nextValue =
+      trimmed === "" || !Number.isFinite(parsed) || parsed < 0 ? null : parsed;
+
+    setFeeOverrides((current) => {
+      const exchangeCells = current[exchange] ?? {};
+      const next: FeeOverrideMatrix = {
+        ...current,
+        [exchange]: {
+          ...exchangeCells,
+          [feeAsset]: { ...exchangeCells[feeAsset], [chain]: nextValue },
+        },
+      };
+      persistFeeOverrides(next);
+      return next;
+    });
   };
 
   const resetFees = () => {
-    const next = mergeFees(DEFAULT_FEES, market.liveFees);
-    setFees(next);
-    setFeeSources(resolveFeeSources(market.liveFees));
-    hasSavedFees.current = false;
-    localStorage.removeItem(WITHDRAWAL_FEE_STORAGE_KEY);
+    setFeeOverrides({});
+    setFeeDrafts({});
+    try {
+      localStorage.removeItem(FEE_OVERRIDE_STORAGE_KEY);
+      localStorage.removeItem(WITHDRAWAL_FEE_STORAGE_KEY);
+    } catch {
+      // Nothing to restore if storage is unavailable.
+    }
   };
 
   const updateTradingFee = (
@@ -2225,26 +2383,44 @@ export default function Home() {
                       </div>
                       <div>
                         {CHAINS[feeAsset].map((chain) => {
+                          // "지원되지 않음" now means the exchange really has no
+                          // such chain, not that the field happens to be empty.
+                          const supported = supportsChain(
+                            baseFees,
+                            exchange,
+                            feeAsset,
+                            chain,
+                          );
                           const feeValue = fees[exchange][feeAsset][chain];
+                          const draft =
+                            feeDrafts[feeDraftKey(exchange, feeAsset, chain)];
                           return (
                             <label key={chain}>
                               <span>{CHAIN_LABELS[chain]}</span>
-                              {feeValue === undefined ? (
+                              {!supported ? (
                                 <b className="unsupported-chain">
                                   지원되지 않음
                                 </b>
                               ) : (
                                 <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={feeValue}
+                                  type="text"
+                                  inputMode="decimal"
+                                  aria-label={`${exchange} ${feeAsset} ${CHAIN_LABELS[chain]} 출금 수수료`}
+                                  value={
+                                    draft ??
+                                    (feeValue === undefined
+                                      ? ""
+                                      : String(feeValue))
+                                  }
                                   onChange={(event) =>
                                     updateFee(
                                       exchange,
                                       feeAsset,
                                       chain,
-                                      event.target.value,
+                                      event.target.value.replace(
+                                        /[^0-9.]/g,
+                                        "",
+                                      ),
                                     )
                                   }
                                 />
