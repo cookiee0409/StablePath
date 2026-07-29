@@ -198,6 +198,14 @@ main {
   width: min(1360px, calc(100% - 64px));
   margin: 0 auto;
   padding: 112px 0 72px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(500px, 560px);
+  align-items: start;
+  gap: 36px;
+}
+
+.hero-copy {
+  min-width: 0;
 }
 
 .eyebrow {
@@ -249,6 +257,12 @@ main {
 
 .hero-description span {
   display: block;
+}
+
+.hero-domestic-quotes {
+  width: 100%;
+  margin-top: 31px;
+  align-self: start;
 }
 
 .planner-section {
@@ -938,13 +952,12 @@ main {
 }
 
 .orderbook-section-heading {
-  margin: 76px 0 24px;
-  padding-top: 30px;
+  margin: 0 0 24px;
+  padding-top: 0;
   display: flex;
   align-items: end;
   justify-content: space-between;
   gap: 28px;
-  border-top: 1px solid var(--ink);
 }
 
 .orderbook-section-heading .eyebrow {
@@ -1093,13 +1106,13 @@ main {
 }
 
 .orderbook-card-header strong {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .orderbook-card-header small,
 .orderbook-card-header span {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .orderbook-column-labels {
@@ -1111,7 +1124,7 @@ main {
   border-bottom: 1px solid var(--line);
   background: #f0f2ed;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 750;
 }
 
@@ -1124,7 +1137,7 @@ main {
   align-items: center;
   overflow: hidden;
   border-bottom: 1px solid #eef0eb;
-  font-size: 11px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -1173,7 +1186,7 @@ main {
   border-bottom: 1px solid var(--ink);
   background: var(--ink);
   color: var(--white);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .orderbook-spread span {
@@ -1881,6 +1894,10 @@ footer > span {
 @media (max-width: 1080px) {
   .hero {
     display: block;
+  }
+
+  .hero-domestic-quotes {
+    margin-top: 36px;
   }
 
   .hero-copy h1 {

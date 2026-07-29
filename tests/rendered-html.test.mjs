@@ -81,6 +81,9 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(page, /ORDERBOOK DEPTH/);
   assert.match(page, /호가창 현황/);
   assert.match(page, /국내 거래소/);
+  assert.match(page, /hero-domestic-quotes/);
+  assert.doesNotMatch(page, /<span>해외 거래소<\/span>/);
+  assert.doesNotMatch(page, /비교에 쓰인 가격/);
   assert.match(page, /해외 스테이블 교환/);
   assert.match(page, /CALCULATION METHOD/);
   assert.match(page, /executeMarketSell/);
@@ -105,6 +108,15 @@ test("ships the finished product assets and removes starter markers", async () =
     /USDT: \{ Tron: 1\.5, Ethereum: 2\.6, Aptos: 0\.0014 \}/,
   );
   assert.match(page, /USDC: \{ Ethereum: 2\.6, Solana: 0\.1 \}/);
+  assert.match(
+    page,
+    /Upbit: \{\s*USDT: \{ Tron: 0, Ethereum: 4, Kaia: 0\.1, Aptos: 0\.1 \},\s*USDC: \{ Ethereum: 1, Solana: 0\.7 \}/s,
+  );
+  assert.match(
+    page,
+    /Bithumb: \{\s*USDT: \{ Tron: 0, Ethereum: 4, Kaia: 0\.1, Aptos: 0\.1 \},\s*USDC: \{ Ethereum: 1 \}/s,
+  );
+  assert.match(page, /stablepath-fees-v2/);
   assert.match(page, /단위 : USDT 또는 USDC/);
   assert.match(page, /지원되지 않음/);
   assert.doesNotMatch(page, /출금 수수료 단위/);

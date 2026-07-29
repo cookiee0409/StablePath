@@ -122,6 +122,7 @@ const FEE_EXCHANGES: FeeExchange[] = [
   ...DOMESTIC_EXCHANGES,
 ];
 const ASSETS: Asset[] = ["USDT", "USDC"];
+const WITHDRAWAL_FEE_STORAGE_KEY = "stablepath-fees-v2";
 const CHAINS: Record<Asset, Chain[]> = {
   USDT: ["Tron", "Ethereum", "Kaia", "Aptos"],
   USDC: ["Ethereum", "Solana"],
@@ -199,12 +200,12 @@ const DEFAULT_FEES: FeeMatrix = {
     USDC: { Ethereum: 2.6, Solana: 0.1 },
   },
   Upbit: {
-    USDT: { Tron: 1 },
-    USDC: { Ethereum: 1, Solana: 1 },
+    USDT: { Tron: 0, Ethereum: 4, Kaia: 0.1, Aptos: 0.1 },
+    USDC: { Ethereum: 1, Solana: 0.7 },
   },
   Bithumb: {
-    USDT: { Tron: 1 },
-    USDC: { Ethereum: 1, Solana: 1 },
+    USDT: { Tron: 0, Ethereum: 4, Kaia: 0.1, Aptos: 0.1 },
+    USDC: { Ethereum: 1 },
   },
 };
 
@@ -782,7 +783,7 @@ export default function Home() {
   useEffect(() => {
     let restoreTimer: number | undefined;
     try {
-      const stored = localStorage.getItem("stablepath-fees");
+      const stored = localStorage.getItem(WITHDRAWAL_FEE_STORAGE_KEY);
       if (stored) {
         const savedFees = JSON.parse(stored) as FeeMatrix;
         restoreTimer = window.setTimeout(() => {
@@ -1136,7 +1137,7 @@ export default function Home() {
       },
     }));
     hasSavedFees.current = true;
-    localStorage.setItem("stablepath-fees", JSON.stringify(next));
+    localStorage.setItem(WITHDRAWAL_FEE_STORAGE_KEY, JSON.stringify(next));
   };
 
   const resetFees = () => {
@@ -1144,7 +1145,7 @@ export default function Home() {
     setFees(next);
     setFeeSources(resolveFeeSources(market.liveFees));
     hasSavedFees.current = false;
-    localStorage.removeItem("stablepath-fees");
+    localStorage.removeItem(WITHDRAWAL_FEE_STORAGE_KEY);
   };
 
   const updateTradingFee = (
@@ -1258,6 +1259,68 @@ export default function Home() {
             <span>체인별 출금 수수료 및 매매 호가 반영.</span>
           </p>
         </div>
+
+        <article className="quote-panel domestic-quotes hero-domestic-quotes">
+          <div className="panel-title">
+            <span>국내 거래소</span>
+            <div className="price-column-heading">
+              <small>USDT 매도 / 매수</small>
+              <small>USDC 매도 / 매수</small>
+              <small>상태</small>
+            </div>
+          </div>
+          {DOMESTIC_EXCHANGES.map((exchange) => {
+            const usdt = market.domestic.find(
+              (quote) =>
+                quote.exchange === exchange && quote.asset === "USDT",
+            );
+            const usdc = market.domestic.find(
+              (quote) =>
+                quote.exchange === exchange && quote.asset === "USDC",
+            );
+            return (
+              <div className="quote-row" key={exchange}>
+                <div>
+                  <span
+                    className={`exchange-avatar ${exchange.toLowerCase()}`}
+                  >
+                    {exchange.slice(0, 1)}
+                  </span>
+                  <strong>{exchange}</strong>
+                </div>
+                <div>
+                  <span>
+                    {usdt?.source === "unavailable"
+                      ? "—"
+                      : `${krwFormatter.format(usdt?.bid ?? 0)} / ${krwFormatter.format(usdt?.ask ?? 0)}`}
+                  </span>
+                  <strong>
+                    {usdc?.source === "unavailable"
+                      ? "—"
+                      : `${krwFormatter.format(usdc?.bid ?? 0)} / ${krwFormatter.format(usdc?.ask ?? 0)}`}
+                  </strong>
+                  <i
+                    className={
+                      usdt?.source === "live" && usdc?.source === "live"
+                        ? "live"
+                        : usdt?.source === "stale" ||
+                            usdc?.source === "stale"
+                          ? "stale"
+                          : "unavailable"
+                    }
+                  >
+                    {usdt?.source === "live" && usdc?.source === "live"
+                      ? "live"
+                      : usdt?.source === "stale" ||
+                          usdc?.source === "stale"
+                        ? "stale"
+                        : "unavailable"}
+                  </i>
+                </div>
+              </div>
+            );
+          })}
+        </article>
       </section>
 
       <section className="planner-section" aria-label="전송 효율 계산">
@@ -1593,113 +1656,6 @@ export default function Home() {
       </section>
 
       <section className="market-section">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">MARKET SNAPSHOT</p>
-            <h2>비교에 쓰인 가격</h2>
-          </div>
-        </div>
-
-        <div className="quote-grid">
-          <article className="quote-panel">
-            <div className="panel-title">
-              <span>해외 거래소</span>
-              <div className="price-column-heading">
-                <small>USDC → USDT</small>
-                <small>USDT → USDC</small>
-                <small>상태</small>
-              </div>
-            </div>
-            {market.foreign.map((quote) => (
-              <div className="quote-row" key={quote.exchange}>
-                <div>
-                  <span
-                    className={`exchange-avatar ${quote.exchange.toLowerCase()}`}
-                  >
-                    {quote.exchange.slice(0, 1)}
-                  </span>
-                  <strong>{quote.exchange}</strong>
-                </div>
-                <div>
-                  <span>
-                    {quote.source === "unavailable"
-                      ? "—"
-                      : quote.bid.toFixed(4)}
-                  </span>
-                  <strong>
-                    {quote.source === "unavailable"
-                      ? "—"
-                      : quote.ask.toFixed(4)}
-                  </strong>
-                  <i className={quote.source}>{quote.source}</i>
-                </div>
-              </div>
-            ))}
-          </article>
-
-          <article className="quote-panel domestic-quotes">
-            <div className="panel-title">
-              <span>국내 거래소</span>
-              <div className="price-column-heading">
-                <small>USDT 매도 / 매수</small>
-                <small>USDC 매도 / 매수</small>
-                <small>상태</small>
-              </div>
-            </div>
-            {DOMESTIC_EXCHANGES.map((exchange) => {
-              const usdt = market.domestic.find(
-                (quote) =>
-                  quote.exchange === exchange && quote.asset === "USDT",
-              );
-              const usdc = market.domestic.find(
-                (quote) =>
-                  quote.exchange === exchange && quote.asset === "USDC",
-              );
-              return (
-                <div className="quote-row" key={exchange}>
-                  <div>
-                    <span
-                      className={`exchange-avatar ${exchange.toLowerCase()}`}
-                    >
-                      {exchange.slice(0, 1)}
-                    </span>
-                    <strong>{exchange}</strong>
-                  </div>
-                  <div>
-                    <span>
-                      {usdt?.source === "unavailable"
-                        ? "—"
-                        : `${krwFormatter.format(usdt?.bid ?? 0)} / ${krwFormatter.format(usdt?.ask ?? 0)}`}
-                    </span>
-                    <strong>
-                      {usdc?.source === "unavailable"
-                        ? "—"
-                        : `${krwFormatter.format(usdc?.bid ?? 0)} / ${krwFormatter.format(usdc?.ask ?? 0)}`}
-                    </strong>
-                    <i
-                      className={
-                        usdt?.source === "live" && usdc?.source === "live"
-                          ? "live"
-                          : usdt?.source === "stale" ||
-                              usdc?.source === "stale"
-                            ? "stale"
-                            : "unavailable"
-                      }
-                    >
-                      {usdt?.source === "live" && usdc?.source === "live"
-                        ? "live"
-                        : usdt?.source === "stale" ||
-                            usdc?.source === "stale"
-                          ? "stale"
-                          : "unavailable"}
-                    </i>
-                  </div>
-                </div>
-              );
-            })}
-          </article>
-        </div>
-
         <div className="orderbook-section-heading">
           <div>
             <p className="eyebrow">ORDERBOOK DEPTH</p>
