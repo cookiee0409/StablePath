@@ -78,13 +78,15 @@ test("ships the finished product assets and removes starter markers", async () =
   assert.match(page, /BEST ROUTE/);
   assert.match(page, /WITHDRAWAL FEES/);
   assert.match(page, /TRADING FEES/);
-  assert.match(page, /FOREIGN STABLE ORDERBOOK DEPTH/);
-  assert.match(page, /해외 스테이블 교환 호가창/);
-  assert.match(page, /DOMESTIC ORDERBOOK DEPTH/);
-  assert.match(page, /국내 호가창 현황/);
+  assert.match(page, /ORDERBOOK DEPTH/);
+  assert.match(page, /호가창 현황/);
+  assert.match(page, /국내 거래소/);
+  assert.match(page, /해외 스테이블 교환/);
   assert.match(page, /CALCULATION METHOD/);
   assert.match(page, /executeMarketSell/);
+  assert.match(page, /executeMarketBuy/);
   assert.match(page, /executeForeignSwap/);
+  assert.match(page, /fromKrw/);
   assert.match(page, /보유 자산/);
   assert.match(page, /전송할 자산/);
   assert.match(page, /totalWithdrawalFee = withdrawalFee \* transferCount/);
@@ -100,14 +102,16 @@ test("ships the finished product assets and removes starter markers", async () =
   );
   assert.match(
     page,
-    /USDT: \{ Tron: 1\.5, Ethereum: 0\.63, Aptos: 0\.0014 \}/,
+    /USDT: \{ Tron: 1\.5, Ethereum: 2\.6, Aptos: 0\.0014 \}/,
   );
-  assert.match(page, /USDC: \{\}/);
-  assert.match(page, /출금 수수료 단위/);
-  assert.match(page, /1 USDT, USDC 항목의 1은 1 USDC/);
+  assert.match(page, /USDC: \{ Ethereum: 2\.6, Solana: 0\.1 \}/);
+  assert.match(page, /단위 : USDT 또는 USDC/);
+  assert.match(page, /지원되지 않음/);
+  assert.doesNotMatch(page, /출금 수수료 단위/);
+  assert.doesNotMatch(page, /입력한 회당 출금 수수료/);
   assert.match(
     page,
-    /실제 값과 차이가 있을 수 있으므로, 거래 전 본인이 반드시/,
+    /출금 수수료는 변경될 수 있습니다/,
   );
   assert.match(page, /slippageBps/);
   assert.match(marketRoute, /bid_size/);

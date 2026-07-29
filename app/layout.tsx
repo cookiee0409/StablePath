@@ -4,7 +4,7 @@ import "./globals.css";
 
 const title = "StablePath — 원화 효율 계산기";
 const description =
-  "해외거래소의 스테이블 코인을 어떤 자산과 체인으로 보내야 가장 효율이 좋은지 체인별 출금 수수료와 국내 매수호가 잔량을 반영해 계산합니다.";
+  "스테이블 코인과 국내거래소 원화 사이의 가장 유리한 양방향 전송 경로를 체인별 출금 수수료와 매매호가를 반영해 계산합니다.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();

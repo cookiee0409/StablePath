@@ -197,11 +197,7 @@ main {
 .hero {
   width: min(1360px, calc(100% - 64px));
   margin: 0 auto;
-  padding: 78px 0 92px;
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(460px, 0.72fr);
-  gap: clamp(48px, 8vw, 136px);
-  align-items: end;
+  padding: 112px 0 72px;
 }
 
 .eyebrow {
@@ -213,12 +209,13 @@ main {
 }
 
 .hero-copy h1 {
-  max-width: 820px;
+  max-width: none;
   margin: 0;
-  font-size: clamp(60px, calc(7.5vw + 2px), 118px);
+  font-size: clamp(58px, calc(7vw + 2px), 108px);
   font-weight: 860;
   letter-spacing: -0.075em;
   line-height: 0.92;
+  white-space: nowrap;
 }
 
 .hero-copy h1 span {
@@ -241,7 +238,7 @@ main {
 }
 
 .hero-description {
-  max-width: 610px;
+  max-width: 760px;
   margin: 38px 0 0;
   color: var(--muted);
   font-size: 19px;
@@ -250,8 +247,21 @@ main {
   letter-spacing: -0.035em;
 }
 
+.hero-description span {
+  display: block;
+}
+
+.planner-section {
+  width: min(1420px, calc(100% - 48px));
+  margin: 0 auto 96px;
+  display: grid;
+  grid-template-columns: minmax(640px, 1.35fr) minmax(380px, 0.65fr);
+  gap: 24px;
+  align-items: stretch;
+}
+
 .calculator-card {
-  padding: 28px;
+  padding: 34px 38px;
   border: 1px solid var(--ink);
   border-radius: 2px;
   background: var(--white);
@@ -264,7 +274,7 @@ main {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 800;
 }
 
@@ -277,12 +287,46 @@ main {
   border: 0;
   background: transparent;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   cursor: pointer;
 }
 
 .market-time {
   cursor: default;
+}
+
+.direction-switch {
+  margin: 22px 0 28px;
+  padding: 5px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  border: 1px solid var(--ink);
+  background: #eef1e9;
+}
+
+.direction-switch button {
+  min-height: 50px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.direction-switch button span {
+  margin: 0 6px;
+  color: var(--purple);
+}
+
+.direction-switch button.active {
+  background: var(--ink);
+  color: var(--white);
+}
+
+.direction-switch button.active span {
+  color: var(--lime);
 }
 
 .refresh-button:disabled {
@@ -328,13 +372,13 @@ main {
 }
 
 .asset-choice-label > span {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 900;
 }
 
 .asset-choice-label small {
   color: var(--muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.25;
   text-align: left;
 }
@@ -349,7 +393,7 @@ main {
   border-radius: 2px;
   background: #fafbf8;
   color: var(--muted);
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 850;
   cursor: pointer;
 }
@@ -367,7 +411,7 @@ main {
   place-items: center;
   border-radius: 50%;
   color: var(--ink);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 900;
 }
 
@@ -409,7 +453,7 @@ main {
 .field-help {
   margin: 9px 0 27px;
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
 }
 
 .transfer-count-field {
@@ -435,7 +479,7 @@ main {
   border: 1px solid var(--line);
   background: var(--white);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 800;
   cursor: pointer;
 }
@@ -452,7 +496,7 @@ main {
 
 .exchange-label span:last-child {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 650;
 }
 
@@ -468,7 +512,7 @@ main {
   border: 1px solid var(--line);
   background: var(--white);
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 800;
   cursor: pointer;
 }
@@ -477,6 +521,24 @@ main {
   border-color: var(--ink);
   background: var(--lime);
   color: var(--ink);
+}
+
+.domestic-source-grid {
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 24px;
+}
+
+.result-card {
+  min-width: 0;
+  padding: clamp(30px, 3vw, 46px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ink);
+  background:
+    linear-gradient(145deg, rgba(200, 255, 61, 0.08), transparent 45%),
+    #171a15;
+  color: var(--white);
+  box-shadow: 10px 10px 0 var(--lime);
 }
 
 .best-section {
@@ -534,7 +596,7 @@ main {
 
 .arrival-value {
   margin: 28px 0 10px;
-  font-size: clamp(52px, calc(6vw + 2px), 98px);
+  font-size: clamp(42px, calc(4vw + 2px), 66px);
   font-weight: 850;
   letter-spacing: -0.07em;
   line-height: 1;
@@ -549,11 +611,55 @@ main {
 }
 
 .best-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 22px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 9px;
   color: #969b91;
   font-size: 14px;
+}
+
+.result-route {
+  margin: 18px 0 24px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 17px;
+}
+
+.result-route span {
+  color: #70756c;
+}
+
+.before-transfer-note {
+  margin-top: auto;
+  padding-top: 26px;
+  border-top: 1px solid #3b3f37;
+  text-align: right;
+}
+
+.before-transfer-note > span {
+  color: var(--lime);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+}
+
+.before-transfer-note p {
+  margin: 8px 0 12px;
+  color: #93998e;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.before-transfer-note button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--white);
+  font-size: 11px;
+  font-weight: 850;
+  cursor: pointer;
 }
 
 .best-meta strong {
@@ -759,8 +865,21 @@ main {
   font-weight: 900;
 }
 
+.panel-title > span {
+  color: #394fd8;
+  font-size: 16px;
+}
+
+.price-column-heading {
+  display: grid;
+  grid-template-columns: 120px 120px 52px;
+  justify-items: end;
+  gap: 8px;
+}
+
 .panel-title small {
   color: var(--muted);
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -782,7 +901,8 @@ main {
 
 .quote-row > div:last-child {
   display: grid;
-  grid-template-columns: 80px 80px 56px;
+  grid-template-columns: 120px 120px 52px;
+  gap: 8px;
   justify-items: end;
   font-size: 15px;
   font-variant-numeric: tabular-nums;
@@ -839,7 +959,7 @@ main {
 
 .orderbook-toolbar {
   display: grid;
-  grid-template-columns: auto auto;
+  grid-template-columns: auto auto auto;
   gap: 8px 10px;
   justify-items: end;
 }
@@ -851,12 +971,14 @@ main {
 }
 
 .domestic-exchange-tabs,
-.foreign-exchange-tabs {
+.foreign-exchange-tabs,
+.orderbook-view-tabs {
   display: flex;
 }
 
 .domestic-exchange-tabs button,
 .foreign-exchange-tabs button,
+.orderbook-view-tabs button,
 .orderbook-refresh-button {
   min-height: 42px;
   padding: 0 18px;
@@ -868,12 +990,14 @@ main {
 }
 
 .domestic-exchange-tabs button + button,
-.foreign-exchange-tabs button + button {
+.foreign-exchange-tabs button + button,
+.orderbook-view-tabs button + button {
   border-left: 0;
 }
 
 .domestic-exchange-tabs button.active,
-.foreign-exchange-tabs button.active {
+.foreign-exchange-tabs button.active,
+.orderbook-view-tabs button.active {
   background: var(--ink);
   color: var(--lime);
 }
@@ -910,7 +1034,6 @@ main {
 
 .foreign-orderbook-grid {
   grid-template-columns: minmax(0, 1fr);
-  margin-bottom: 44px;
 }
 
 .foreign-orderbook-card {
@@ -1453,6 +1576,24 @@ footer > span {
   border-bottom: 1px solid var(--ink);
 }
 
+.fee-panel-header-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.fee-unit-label {
+  min-height: 40px;
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--ink);
+  background: var(--lime);
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
 .fee-panel-header .eyebrow {
   margin-bottom: 10px;
 }
@@ -1576,27 +1717,18 @@ footer > span {
   font-weight: 750;
 }
 
-.withdrawal-fee-unit {
-  margin: 0 34px;
-  padding: 14px 16px;
-  border: 1px solid #a9b9d7;
-  background: #edf3ff;
-}
-
-.withdrawal-fee-unit strong {
-  display: block;
-  margin-bottom: 5px;
-  color: #263f70;
-  font-size: 13px;
-  font-weight: 900;
-}
-
-.withdrawal-fee-unit p {
-  margin: 0;
-  color: #405272;
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1.6;
+.unsupported-chain {
+  min-height: 36px;
+  padding: 0 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed #c7cac2;
+  background: #f0f1ed;
+  color: #8a8e86;
+  font-size: 9px;
+  font-weight: 800;
+  text-align: center;
 }
 
 .fee-panel-footer {
@@ -1748,12 +1880,19 @@ footer > span {
 
 @media (max-width: 1080px) {
   .hero {
-    grid-template-columns: 1fr 430px;
-    gap: 50px;
+    display: block;
   }
 
   .hero-copy h1 {
-    font-size: 72px;
+    font-size: clamp(54px, 8.2vw, 82px);
+  }
+
+  .planner-section {
+    grid-template-columns: 1fr;
+  }
+
+  .result-card {
+    min-height: 440px;
   }
 
   .best-section {
@@ -1801,6 +1940,14 @@ footer > span {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .orderbook-toolbar {
+    grid-template-columns: auto auto;
+  }
+
+  .orderbook-view-tabs {
+    grid-column: 1 / -1;
+  }
+
   .route-table th:nth-child(2) {
     width: 28%;
   }
@@ -1809,6 +1956,7 @@ footer > span {
 @media (max-width: 800px) {
   .site-header,
   .hero,
+  .planner-section,
   .market-section,
   .chain-section,
   .data-quality-banner {
@@ -1825,8 +1973,6 @@ footer > span {
 
   .hero {
     padding: 54px 0 70px;
-    grid-template-columns: 1fr;
-    gap: 54px;
   }
 
   .hero-copy h1 {
@@ -1841,6 +1987,15 @@ footer > span {
   .calculator-card {
     padding: 22px;
     box-shadow: 8px 8px 0 var(--ink);
+  }
+
+  .planner-section {
+    margin-bottom: 68px;
+  }
+
+  .result-card {
+    min-height: 400px;
+    box-shadow: 8px 8px 0 var(--lime);
   }
 
   .best-section,
@@ -1895,6 +2050,14 @@ footer > span {
   .orderbook-toolbar {
     width: 100%;
     justify-items: start;
+  }
+
+  .orderbook-view-tabs {
+    width: 100%;
+  }
+
+  .orderbook-view-tabs button {
+    flex: 1;
   }
 
   .orderbook-grid {
@@ -1979,11 +2142,6 @@ footer > span {
     padding-left: 18px;
   }
 
-  .withdrawal-fee-unit {
-    margin-right: 18px;
-    margin-left: 18px;
-  }
-
   .fee-table-wrap,
   .trading-fee-grid {
     grid-template-columns: 1fr;
@@ -2031,7 +2189,11 @@ footer > span {
   }
 
   .hero-copy h1 {
-    font-size: 54px;
+    font-size: clamp(34px, 11.6vw, 52px);
+  }
+
+  .hero-description {
+    font-size: 15px;
   }
 
   .exchange-grid {
@@ -2063,10 +2225,18 @@ footer > span {
   }
 
   .quote-row > div:last-child {
-    grid-template-columns: 65px 65px;
+    grid-template-columns: 92px 92px;
   }
 
   .quote-row i {
+    display: none;
+  }
+
+  .price-column-heading {
+    grid-template-columns: 92px 92px;
+  }
+
+  .price-column-heading small:last-child {
     display: none;
   }
 
@@ -2080,12 +2250,14 @@ footer > span {
 
   .domestic-exchange-tabs,
   .foreign-exchange-tabs,
+  .orderbook-view-tabs,
   .orderbook-refresh-button {
     width: 100%;
   }
 
   .domestic-exchange-tabs button,
-  .foreign-exchange-tabs button {
+  .foreign-exchange-tabs button,
+  .orderbook-view-tabs button {
     flex: 1;
     padding-right: 8px;
     padding-left: 8px;
@@ -2101,6 +2273,17 @@ footer > span {
 
   .fee-asset-row {
     grid-template-columns: 1fr;
+  }
+
+  .fee-panel-header-actions {
+    align-items: flex-end;
+    flex-direction: column-reverse;
+  }
+
+  .fee-unit-label {
+    min-height: 32px;
+    padding: 0 9px;
+    font-size: 10px;
   }
 
   .trading-fee-group-heading {
