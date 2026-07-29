@@ -12,6 +12,10 @@ const { d1, r2 } = hostingConfig;
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
+  // Deploy target. Without this the Worker inherits the package name
+  // ("site-creator-vinext-starter") and `wrangler deploy` publishes to a new
+  // Worker instead of updating stablepath.<subdomain>.workers.dev.
+  name: "stablepath",
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
   d1_databases: d1
